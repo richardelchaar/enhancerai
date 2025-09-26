@@ -2,14 +2,12 @@
 
 from typing import Optional
 
-from google.adk import agents
 from google.adk.agents import callback_context as callback_context_module
 from google.adk.models import llm_response as llm_response_module
 from google.adk.models import llm_request as llm_request_module
 
 from machine_learning_engineering.sub_agents.submission import prompt
 from machine_learning_engineering.shared_libraries import debug_util
-from machine_learning_engineering.shared_libraries import common_util
 
 
 def check_submission_finish(
@@ -47,13 +45,9 @@ def get_submission_and_debug_agent_instruction(
             f"train_code_{outer_loop_round}_{task_id}", ""
         )
         curr_exec_result = context.state.get(
-            f"train_code_exec_result_{outer_loop_round}_{task_id}", {}
+            f"train_code_exec_result_{outer_loop_round}_{task_id}", ""
         )
-        curr_score = None
-        if isinstance(curr_exec_result, dict):
-            curr_score = curr_exec_result.get("score")
-        if curr_score is None:
-            continue
+        curr_score = curr_exec_result["score"]
         if (best_score is None) or (lower and curr_score < best_score) or (not lower and curr_score > best_score):
             final_solution = curr_code
             best_score = curr_score
@@ -64,49 +58,20 @@ def get_submission_and_debug_agent_instruction(
         curr_exec_result = context.state.get(
             f"ensemble_code_exec_result_{ensemble_iter}", {}
         )
-        curr_score = None
-        if isinstance(curr_exec_result, dict):
-            curr_score = curr_exec_result.get("score")
-        if curr_score is None:
-            continue
-        if isinstance(curr_code, dict):
-            curr_code = curr_code.get("code", "")
+        curr_score = curr_exec_result["score"]
         if (best_score is None) or (lower and curr_score < best_score) or (not lower and curr_score > best_score):
             final_solution = curr_code
             best_score = curr_score
-    instruction = prompt.ADD_TEST_FINAL_INSTR.format(
+    return prompt.ADD_TEST_FINAL_INSTR.format(
         task_description=task_description,
         code=final_solution,
     )
-    guidance = common_util.get_run_guidance(context, "submission")
-    if guidance:
-        requirements = common_util.extract_guidance_requirements(guidance)
-        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
-        if requirements:
-            instruction += "\n\n# Mandatory directives\n"
-            instruction += "\n".join(f"- {item}" for item in requirements)
-            instruction += (
-                "\n\nDocument in comments how each directive is fulfilled while preparing the submission."
-            )
-    return instruction
 
 
-def build_agent() -> agents.SequentialAgent:
-    """Constructs the submission agent using the latest config."""
-
-    submission_core_agent = debug_util.get_run_and_debug_agent(
-        prefix="submission",
-        suffix="",
-        agent_description="Generate the submission script.",
-        instruction_func=get_submission_and_debug_agent_instruction,
-        before_model_callback=check_submission_finish,
-    )
-
-    return agents.SequentialAgent(
-        name="submission_agent",
-        description="Prepare the final submission.",
-        sub_agents=[submission_core_agent],
-    )
-
-
-__all__ = ["build_agent"]
+submission_agent = debug_util.get_run_and_debug_agent(
+    prefix="submission",
+    suffix="",
+    agent_description="Add codes for creating a submission file.",
+    instruction_func=get_submission_and_debug_agent_instruction,
+    before_model_callback=check_submission_finish,
+)

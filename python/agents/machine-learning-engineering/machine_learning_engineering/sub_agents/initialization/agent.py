@@ -2,7 +2,6 @@
 
 from typing import Optional
 import dataclasses
-import json
 import os
 import shutil
 import time
@@ -234,17 +233,6 @@ def prepare_task(
     callback_context.state["start_time"] = time.time()
     # fix randomness
     common_util.set_random_seed(callback_context.state["seed"])
-    run_guidance_path = callback_context.state.get("run_guidance_path", "")
-    run_guidance = {}
-    if isinstance(run_guidance_path, str) and run_guidance_path:
-        try:
-            with open(run_guidance_path, "r", encoding="utf-8") as f:
-                run_guidance = json.load(f)
-        except FileNotFoundError:
-            run_guidance = {}
-        except json.JSONDecodeError:
-            run_guidance = {}
-    callback_context.state["run_guidance"] = run_guidance
     task_name = callback_context.state.get("task_name", "")
     data_dir = callback_context.state.get("data_dir", "")
     task_description = open(
@@ -298,22 +286,10 @@ def get_model_eval_agent_instruction(
         f"init_{task_id}_model_{model_id}",
         {},
     ).get("model_description", "")
-    instruction = prompt.MODEL_EVAL_INSTR.format(
+    return prompt.MODEL_EVAL_INSTR.format(
         task_description=task_description,
         model_description=model_description,
     )
-    guidance = common_util.get_run_guidance(context, "initialization")
-    if guidance:
-        requirements = common_util.extract_guidance_requirements(guidance)
-        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
-        if requirements:
-            instruction += "\n\n# Mandatory directives\n"
-            instruction += "\n".join(f"- {item}" for item in requirements)
-            instruction += (
-                "\n\nYour summary must explicitly describe how each directive "
-                "will be satisfied."
-            )
-    return instruction
 
 
 def get_model_retriever_agent_instruction(
@@ -322,21 +298,10 @@ def get_model_retriever_agent_instruction(
     """Gets the model retriever agent instruction."""
     task_summary = context.state.get("task_summary", "")
     num_model_candidates = context.state.get("num_model_candidates", 2)
-    instruction = prompt.MODEL_RETRIEVAL_INSTR.format(
+    return prompt.MODEL_RETRIEVAL_INSTR.format(
         task_summary=task_summary,
         num_model_candidates=num_model_candidates,
     )
-    guidance = common_util.get_run_guidance(context, "initialization")
-    if guidance:
-        requirements = common_util.extract_guidance_requirements(guidance)
-        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
-        if requirements:
-            instruction += "\n\n# Mandatory directives\n"
-            instruction += "\n".join(f"- {item}" for item in requirements)
-            instruction += (
-                "\n\nYour retrieval must reflect each directive; cite them in your output."
-            )
-    return instruction
 
 
 def get_merger_agent_instruction(
@@ -353,21 +318,10 @@ def get_merger_agent_instruction(
         ).replace("```", "")
     else:
         reference_solution = ""
-    instruction = prompt.CODE_INTEGRATION_INSTR.format(
+    return prompt.CODE_INTEGRATION_INSTR.format(
         base_code=base_solution,
         reference_code=reference_solution,
     )
-    guidance = common_util.get_run_guidance(context, "initialization")
-    if guidance:
-        requirements = common_util.extract_guidance_requirements(guidance)
-        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
-        if requirements:
-            instruction += "\n\n# Mandatory directives\n"
-            instruction += "\n".join(f"- {item}" for item in requirements)
-            instruction += (
-                "\n\nExplain how the merged code implements each directive."
-            )
-    return instruction
 
 
 def get_check_data_use_instruction(
@@ -377,136 +331,114 @@ def get_check_data_use_instruction(
     task_id = context.agent_name.split("_")[-1]
     task_description = context.state.get("task_description", "")
     code = context.state.get(f"train_code_0_{task_id}", "")
-    instruction = prompt.CHECK_DATA_USE_INSTR.format(
+    return prompt.CHECK_DATA_USE_INSTR.format(
         code=code,
         task_description=task_description,
     )
-    guidance = common_util.get_run_guidance(context, "initialization")
-    if guidance:
-        requirements = common_util.extract_guidance_requirements(guidance)
-        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
-        if requirements:
-            instruction += "\n\n# Mandatory directives\n"
-            instruction += "\n".join(f"- {item}" for item in requirements)
-            instruction += (
-                "\n\nIf no changes are required, explicitly state how each directive is already satisfied."
-            )
-    return instruction
 
 
-def build_agent() -> agents.SequentialAgent:
-    """Constructs the initialization agent graph using the latest config."""
-
-    task_summarization_agent = agents.Agent(
+task_summarization_agent = agents.Agent(
+    model=config.CONFIG.agent_model,
+    name="task_summarization_agent",
+    description="Summarize the task description.",
+    instruction=prompt.SUMMARIZATION_AGENT_INSTR,
+    after_model_callback=get_task_summary,
+    generate_content_config=types.GenerateContentConfig(
+        temperature=0.0,
+    ),
+    include_contents="none",
+)
+init_parallel_sub_agents = []
+for k in range(config.CONFIG.num_solutions):
+    model_retriever_agent = agents.Agent(
         model=config.CONFIG.agent_model,
-        name="task_summarization_agent",
-        description="Summarize the task description.",
-        instruction=prompt.SUMMARIZATION_AGENT_INSTR,
-        after_model_callback=get_task_summary,
+        name=f"model_retriever_agent_{k+1}",
+        description="Retrieve effective models for solving a given task.",
+        instruction=get_model_retriever_agent_instruction,
+        tools=[google_search],
+        before_model_callback=check_model_finish,
+        after_model_callback=get_model_candidates,
         generate_content_config=types.GenerateContentConfig(
-            temperature=0.0,
+            temperature=1.0,
         ),
         include_contents="none",
     )
-
-    init_parallel_sub_agents = []
-    for k in range(config.CONFIG.num_solutions):
-        model_retriever_agent = agents.Agent(
-            model=config.CONFIG.agent_model,
-            name=f"model_retriever_agent_{k+1}",
-            description="Retrieve effective models for solving a given task.",
-            instruction=get_model_retriever_agent_instruction,
-            tools=[google_search],
-            before_model_callback=check_model_finish,
-            after_model_callback=get_model_candidates,
-            generate_content_config=types.GenerateContentConfig(
-                temperature=1.0,
-            ),
-            include_contents="none",
+    model_retriever_loop_agent = agents.LoopAgent(
+        name=f"model_retriever_loop_agent_{k+1}",
+        description="Retrieve effective models until it succeeds.",
+        sub_agents=[model_retriever_agent],
+        max_iterations=config.CONFIG.max_retry,
+    )
+    init_solution_gen_sub_agents = [
+        model_retriever_loop_agent,
+    ]
+    for l in range(config.CONFIG.num_model_candidates):
+        model_eval_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
+            prefix="model_eval",
+            suffix=f"{k+1}_{l+1}",
+            agent_description="Generate a code using the given model",
+            instruction_func=get_model_eval_agent_instruction,
+            before_model_callback=check_model_eval_finish,
         )
-        model_retriever_loop_agent = agents.LoopAgent(
-            name=f"model_retriever_loop_agent_{k+1}",
-            description="Retrieve effective models until it succeeds.",
-            sub_agents=[model_retriever_agent],
-            max_iterations=config.CONFIG.max_retry,
+        init_solution_gen_sub_agents.append(model_eval_and_debug_loop_agent)
+    rank_agent = agents.SequentialAgent(
+        name=f"rank_agent_{k+1}",
+        description="Rank the solutions based on the scores.",
+        before_agent_callback=rank_candidate_solutions,
+    )
+    init_solution_gen_sub_agents.append(rank_agent)
+    for l in range(1, config.CONFIG.num_model_candidates):
+        merge_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
+            prefix="merger",
+            suffix=f"{k+1}_{l}",
+            agent_description="Integrate two solutions into a single solution",
+            instruction_func=get_merger_agent_instruction,
+            before_model_callback=check_merger_finish,
         )
-        init_solution_gen_sub_agents = [model_retriever_loop_agent]
-
-        for l in range(config.CONFIG.num_model_candidates):
-            model_eval_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
-                prefix="model_eval",
-                suffix=f"{k+1}_{l+1}",
-                agent_description="Generate a code using the given model",
-                instruction_func=get_model_eval_agent_instruction,
-                before_model_callback=check_model_eval_finish,
-            )
-            init_solution_gen_sub_agents.append(model_eval_and_debug_loop_agent)
-
-        rank_agent = agents.SequentialAgent(
-            name=f"rank_agent_{k+1}",
-            description="Rank the solutions based on the scores.",
-            before_agent_callback=rank_candidate_solutions,
+        merger_states_update_agent = agents.SequentialAgent(
+            name=f"merger_states_update_agent_{k+1}_{l}",
+            description="Updates the states after merging.",
+            before_agent_callback=update_merger_states,
         )
-        init_solution_gen_sub_agents.append(rank_agent)
-
-        for l in range(1, config.CONFIG.num_model_candidates):
-            merge_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
-                prefix="merger",
-                suffix=f"{k+1}_{l}",
-                agent_description="Integrate two solutions into a single solution",
-                instruction_func=get_merger_agent_instruction,
-                before_model_callback=check_merger_finish,
-            )
-            merger_states_update_agent = agents.SequentialAgent(
-                name=f"merger_states_update_agent_{k+1}_{l}",
-                description="Updates the states after merging.",
-                before_agent_callback=update_merger_states,
-            )
-            init_solution_gen_sub_agents.extend([
+        init_solution_gen_sub_agents.extend(
+            [
                 merge_and_debug_loop_agent,
                 merger_states_update_agent,
-            ])
-
-        selection_agent = agents.SequentialAgent(
-            name=f"selection_agent_{k+1}",
-            description="Select the best solution.",
-            before_agent_callback=select_best_solution,
+            ]
         )
-        init_solution_gen_sub_agents.append(selection_agent)
-
-        if config.CONFIG.use_data_usage_checker:
-            check_data_use_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
-                prefix="check_data_use",
-                suffix=f"{k+1}",
-                agent_description="Check if all the provided information is used",
-                instruction_func=get_check_data_use_instruction,
-                before_model_callback=skip_data_use_check,
-            )
-            init_solution_gen_sub_agents.append(check_data_use_and_debug_loop_agent)
-
-        init_solution_gen_agent = agents.SequentialAgent(
-            name=f"init_solution_gen_agent_{k+1}",
-            description="Generate an initial solutions for the given task.",
-            sub_agents=init_solution_gen_sub_agents,
-            before_agent_callback=create_workspace,
+    selection_agent = agents.SequentialAgent(
+        name=f"selection_agent_{k+1}",
+        description="Select the best solution.",
+        before_agent_callback=select_best_solution,
+    )
+    init_solution_gen_sub_agents.append(selection_agent)
+    if config.CONFIG.use_data_usage_checker:
+        check_data_use_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
+            prefix="check_data_use",
+            suffix=f"{k+1}",
+            agent_description="Check if all the provided information is used",
+            instruction_func=get_check_data_use_instruction,
+            before_model_callback=skip_data_use_check,
         )
-        init_parallel_sub_agents.append(init_solution_gen_agent)
-
-    init_parallel_agent = agents.ParallelAgent(
-        name="init_parallel_agent",
-        description="Generate multiple initial solutions for the given task in parallel.",
-        sub_agents=init_parallel_sub_agents,
+        init_solution_gen_sub_agents.append(check_data_use_and_debug_loop_agent)
+    init_solution_gen_agent = agents.SequentialAgent(
+        name=f"init_solution_gen_agent_{k+1}",
+        description="Generate an initial solutions for the given task.",
+        sub_agents=init_solution_gen_sub_agents,
+        before_agent_callback=create_workspace,
     )
-
-    return agents.SequentialAgent(
-        name="initialization_agent",
-        description="Initialize the states and generate initial solutions.",
-        sub_agents=[
-            task_summarization_agent,
-            init_parallel_agent,
-        ],
-        before_agent_callback=prepare_task,
-    )
-
-
-__all__ = ["build_agent"]
+    init_parallel_sub_agents.append(init_solution_gen_agent)
+init_parallel_agent = agents.ParallelAgent(
+    name="init_parallel_agent",
+    description="Generate multiple initial solutions for the given task in parallel.",
+    sub_agents=init_parallel_sub_agents,
+)
+initialization_agent = agents.SequentialAgent(
+    name="initialization_agent",
+    description="Initialize the states and generate initial solutions.",
+    sub_agents=[
+        task_summarization_agent,
+        init_parallel_agent,
+    ],
+    before_agent_callback=prepare_task,
+)

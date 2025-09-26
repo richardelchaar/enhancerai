@@ -7,8 +7,6 @@ import time
 
 from google.adk.agents import callback_context as callback_context_module
 
-from machine_learning_engineering.shared_libraries import guidance_validator
-
 
 class Result:
     def __init__(self, returncode, stdout, stderr):
@@ -24,7 +22,6 @@ def run_python_code(
     exec_timeout: int,
 ) -> dict[str, Any]:
     start_time = time.time()
-    os.makedirs(run_cwd, exist_ok=True)
     output_filepath = os.path.join(run_cwd, py_filepath)
     with open(output_filepath, "w", encoding="utf-8") as f:
         f.write(code_text)
@@ -259,23 +256,6 @@ def evaluate_code(
             result_dict["score"] = score
     else:
         result_dict = {}
-
-    if raw_code and not agent_name.startswith("ablation"):
-        violations = guidance_validator.validate_code(callback_context, raw_code)
-        if violations:
-            violation_text = "\n".join(violations)
-            stderr = result_dict.get("stderr", "")
-            if stderr:
-                stderr = f"{stderr}\n{violation_text}"
-            else:
-                stderr = violation_text
-            result_dict["stderr"] = stderr
-            result_dict["returncode"] = 1
-            if agent_name.startswith("submission"):
-                pass
-            else:
-                result_dict["score"] = 1e9 if lower else 0
-
     code_execution_result_state_key = get_code_execution_result_state_key(
         agent_name=agent_name,
         suffix=suffix,
