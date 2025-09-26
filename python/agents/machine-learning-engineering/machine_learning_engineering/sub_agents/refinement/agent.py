@@ -387,6 +387,7 @@ def build_agent() -> agents.ParallelAgent:
             suffix=f"{k+1}",
             agent_description="Generate an ablation study.",
             instruction_func=get_ablation_agent_instruction,
+            before_model_callback=check_ablation_finish,
         )
         ablation_summary_agent = agents.Agent(
             model=config.CONFIG.agent_model,
@@ -404,7 +405,7 @@ def build_agent() -> agents.ParallelAgent:
             name=f"init_plan_agent_{k+1}",
             description="Plan the refinement of the solution.",
             instruction=get_init_plan_agent_instruction,
-            after_model_callback=get_refine_plan,
+            after_model_callback=get_plan_and_code_block,
             generate_content_config=types.GenerateContentConfig(
                 temperature=0.6,
             ),
@@ -428,8 +429,8 @@ def build_agent() -> agents.ParallelAgent:
             model=config.CONFIG.agent_model,
             name=f"plan_refine_agent_{k+1}",
             description="Refine the improvement plan.",
-            instruction=get_plan_refine_agent_instruction,
-            after_model_callback=get_refine_plan,
+            instruction=get_plan_refinement_instruction,
+            after_model_callback=get_refined_plan,
             generate_content_config=types.GenerateContentConfig(
                 temperature=0.7,
             ),

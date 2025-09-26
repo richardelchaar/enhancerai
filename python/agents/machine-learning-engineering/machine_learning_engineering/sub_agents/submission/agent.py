@@ -98,7 +98,7 @@ def build_agent() -> agents.SequentialAgent:
         prefix="submission",
         suffix="",
         agent_description="Generate the submission script.",
-        instruction_func=get_submission_agent_instruction,
+        instruction_func=get_submission_and_debug_agent_instruction,
         before_model_callback=check_submission_finish,
     )
 

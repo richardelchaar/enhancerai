@@ -1,0 +1,33 @@
+## Model name
+CatBoost
+
+## Example Python code
+from catboost import CatBoostRegressor
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from sklearn.datasets import make_regression
+
+# 1. Generate synthetic data (replace with your actual data)
+X, y = make_regression(n_samples=1000, n_features=10, random_state=42, noise=0.1)
+
+# 2. Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# 3. Initialize and train the CatBoost Regressor
+#    verbose=0 suppresses training output, 'RMSE' is the default eval metric for regression
+model = CatBoostRegressor(iterations=100,  # Number of boosting iterations
+                          learning_rate=0.1,
+                          depth=6,
+                          loss_function='RMSE', # Specifies RMSE as the loss function
+                          random_seed=42,
+                          verbose=0 # Suppress verbose output
+                         )
+model.fit(X_train, y_train)
+
+# 4. Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# 5. Evaluate the model using RMSE
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+print(f"CatBoost RMSE: {rmse:.4f}")

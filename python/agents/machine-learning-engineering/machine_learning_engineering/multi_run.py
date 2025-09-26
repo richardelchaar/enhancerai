@@ -36,8 +36,7 @@ def _apply_implicit_overrides(plan: Dict[str, Any], overrides: Dict[str, Any]) -
         str(plan.get("ensemble", "")),
         str(plan.get("submission", "")),
     ]
-    combined = " 
-".join(text_parts).lower()
+    combined = " ".join(text_parts).lower()
 
     def ensure_minimum(key: str, value: int) -> None:
         current = overrides.get(key)
