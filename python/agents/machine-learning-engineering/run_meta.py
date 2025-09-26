@@ -1,0 +1,260 @@
+"""
+Main entry point for the MLE-STAR Meta-Learning Framework.
+
+This orchestrator manages the N-run process, invoking the MLE-STAR pipeline,
+collecting results, and using the Enhancer agent to strategize for subsequent runs.
+"""
+import argparse
+import json
+import os
+import shutil
+import time
+from typing import Any, Dict, List
+
+from google.genai import types
+from google.adk.runners import Runner
+from google.adk.runners import InMemoryRunner
+
+from machine_learning_engineering.agent import mle_pipeline_agent
+from machine_learning_engineering.shared_libraries import config
+from machine_learning_engineering.sub_agents.enhancer.agent import enhancer_agent
+
+
+class MetaOrchestrator:
+    """Manages the entire multi-run meta-learning workflow."""
+
+    def __init__(self, task_name: str, num_runs: int, initial_config_path: str = None):
+        self.task_name = task_name
+        self.num_runs = num_runs
+        self.workspace_root = os.path.join(
+            config.CONFIG.workspace_dir, self.task_name
+        )
+        self.run_history_path = os.path.join(self.workspace_root, "run_history.json")
+        self.run_history = []
+        self.initial_config = self._load_initial_config(initial_config_path)
+
+    def _load_initial_config(self, path: str) -> Dict[str, Any]:
+        """Loads an initial config override from a JSON file."""
+        if path and os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+        return {}
+
+    def _setup_workspace(self):
+        """Creates the master workspace and loads the run history."""
+        os.makedirs(self.workspace_root, exist_ok=True)
+        if os.path.exists(self.run_history_path):
+            with open(self.run_history_path, "r") as f:
+                self.run_history = json.load(f)
+        print(f"Workspace initialized at: {self.workspace_root}")
+        print(f"Loaded {len(self.run_history)} previous run(s) from history.")
+
+    def _get_config_for_run(self, run_id: int) -> Dict[str, Any]:
+        """Determines the configuration for the current run."""
+        # Start with a fresh copy of the defaults
+        current_config = config.DefaultConfig()
+
+        if run_id == 0:
+            # For the first run, apply any user-provided initial overrides
+            for key, value in self.initial_config.items():
+                if hasattr(current_config, key):
+                    setattr(current_config, key, value)
+            print("Run 0: Using baseline configuration with user overrides.")
+        else:
+            # For subsequent runs, use the strategy from the previous run's Enhancer
+            prev_run_summary = self.run_history[-1]
+            enhancer_output = prev_run_summary.get("enhancer_output", {})
+            overrides = enhancer_output.get("config_overrides", {})
+            for key, value in overrides.items():
+                if hasattr(current_config, key):
+                    setattr(current_config, key, value)
+            print(f"Run {run_id}: Applying enhanced configuration from previous run.")
+        
+        # Ensure task_name is always set correctly
+        current_config.task_name = self.task_name
+        return current_config
+
+    async def _execute_pipeline_run(self, run_id: int, run_config: config.DefaultConfig):
+        """Executes a single, isolated run of the MLE-STAR pipeline."""
+        print(f"\n--- Starting MLE-STAR Pipeline: Run {run_id} ---")
+        run_dir = os.path.join(self.workspace_root, f"run_{run_id}")
+        if os.path.exists(run_dir):
+            shutil.rmtree(run_dir)
+        os.makedirs(run_dir)
+        
+        # Override the default workspace to isolate this run
+        # Ensures all artifacts for this run go under: workspace_root/run_{id}/
+        run_config.workspace_dir = run_dir
+        
+        # Build initial session state
+        initial_state: Dict[str, Any] = {**run_config.__dict__}
+        initial_state["run_id"] = run_id
+
+        runner = InMemoryRunner(agent=mle_pipeline_agent, app_name="mle-meta-pipeline")
+        try:
+            # Also override the global CONFIG so sub-agents that read CONFIG don't overwrite the session state
+            prev_workspace_dir = config.CONFIG.workspace_dir
+            config.CONFIG.workspace_dir = run_dir
+
+            session = await runner.session_service.create_session(
+                app_name=runner.app_name,
+                user_id=f"meta-user-{run_id}",
+                state=initial_state,
+            )
+
+            # Kick off the run with a minimal user message
+            content = types.Content(parts=[types.Part(text="run")], role="user")
+            async for _ in runner.run_async(
+                user_id=session.user_id,
+                session_id=session.id,
+                new_message=content,
+            ):
+                pass
+
+            # Fetch final merged state from the session service
+            final_session = await runner.session_service.get_session(
+                app_name=runner.app_name,
+                user_id=session.user_id,
+                session_id=session.id,
+            )
+            final_state: Dict[str, Any] = final_session.state
+        finally:
+            # Restore global config and close runner
+            try:
+                config.CONFIG.workspace_dir = prev_workspace_dir
+            except Exception:
+                pass
+            await runner.close()
+
+        # Save the complete state for this run for analysis by the Enhancer
+        with open(os.path.join(run_dir, "final_state.json"), "w") as f:
+            json.dump(final_state, f, indent=2)
+            
+        print(f"--- Finished MLE-STAR Pipeline: Run {run_id} ---")
+        return final_state
+
+    def _update_run_history(self, run_id: int, final_state: Dict[str, Any]):
+        """Parses the final state and updates the persistent run history."""
+        # Find the best score from this run
+        best_score = None
+        lower_is_better = final_state.get("lower", True)
+        
+        # Check all potential final solutions from all parallel initializations
+        for i in range(final_state.get("num_solutions", 1)):
+            task_id = i + 1
+            # Check final refined score
+            refined_score = final_state.get(f"train_code_exec_result_{final_state.get(f'refine_step_{task_id}', 0)}_{task_id}", {}).get("score")
+            if refined_score is not None:
+                if best_score is None or (lower_is_better and refined_score < best_score) or (not lower_is_better and refined_score > best_score):
+                    best_score = refined_score
+
+            # Check final ensembled score
+            ensemble_iter = final_state.get("ensemble_iter", 0)
+            ensembled_score = final_state.get(f"ensemble_code_exec_result_{ensemble_iter}", {}).get("score")
+            if ensembled_score is not None:
+                if best_score is None or (lower_is_better and ensembled_score < best_score) or (not lower_is_better and ensembled_score > best_score):
+                    best_score = ensembled_score
+                    
+        run_summary = {
+            "run_id": run_id,
+            "status": "COMPLETED_SUCCESSFULLY" if best_score is not None else "FAILED",
+            "start_time_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(final_state.get("start_time", time.time()))),
+            "duration_seconds": round(time.time() - final_state.get("start_time", time.time())),
+            "best_score": best_score,
+            "best_solution_path": f"run_{run_id}/final/final_solution.py",
+            "config_used": {k: v for k, v in final_state.items() if isinstance(v, (int, str, bool, float))},
+            "enhancer_rationale": "Baseline run." if run_id == 0 else self.run_history[-1].get("enhancer_output", {}).get("strategic_summary", "N/A")
+        }
+        
+        self.run_history.append(run_summary)
+        with open(self.run_history_path, "w") as f:
+            json.dump(self.run_history, f, indent=2)
+        print(f"Run {run_id} summary saved. Best score: {best_score}")
+
+    async def _invoke_enhancer(self, last_run_id: int) -> Dict[str, Any]:
+        """Runs the Enhancer agent to get the strategy for the next run."""
+        print(f"\n--- Invoking Enhancer Agent to strategize for Run {last_run_id + 1} ---")
+        
+        last_run_state_path = os.path.join(self.workspace_root, f"run_{last_run_id}", "final_state.json")
+        with open(last_run_state_path, 'r') as f:
+            last_run_state = json.load(f)
+            
+        enhancer_initial_state: Dict[str, Any] = {}
+        enhancer_initial_state["last_run_final_state"] = last_run_state
+        enhancer_initial_state["run_history_summary"] = self.run_history
+        scores = [r['best_score'] for r in self.run_history if r['best_score'] is not None]
+        enhancer_initial_state["best_score_so_far"] = min(scores) if scores else None
+
+        runner = InMemoryRunner(agent=enhancer_agent, app_name="mle-meta-enhancer")
+        try:
+            session = await runner.session_service.create_session(
+                app_name=runner.app_name,
+                user_id="meta-enhancer",
+                state=enhancer_initial_state,
+            )
+            content = types.Content(parts=[types.Part(text="enhance")], role="user")
+            async for _ in runner.run_async(
+                user_id=session.user_id,
+                session_id=session.id,
+                new_message=content,
+            ):
+                pass
+
+            final_session = await runner.session_service.get_session(
+                app_name=runner.app_name,
+                user_id=session.user_id,
+                session_id=session.id,
+            )
+            enhancer_output = final_session.state.get("enhancer_output", {})
+        finally:
+            await runner.close()
+        
+        # Append the enhancer's output to the history for the *current* run for traceability
+        self.run_history[-1]["enhancer_output"] = enhancer_output
+        with open(self.run_history_path, "w") as f:
+            json.dump(self.run_history, f, indent=2)
+        
+        print(f"Enhancer Rationale: {enhancer_output.get('strategic_summary', 'No summary provided.')}")
+        return enhancer_output
+
+    async def run(self):
+        """Executes the full meta-learning loop for N runs."""
+        self._setup_workspace()
+        
+        for i in range(len(self.run_history), self.num_runs):
+            current_config = self._get_config_for_run(i)
+            
+            # This is where the core pipeline is executed
+            final_state = await self._execute_pipeline_run(run_id=i, run_config=current_config)
+            
+            # This function updates the history log
+            self._update_run_history(run_id=i, final_state=final_state)
+            
+            # This invokes the enhancer to prepare for the *next* loop
+            if i < self.num_runs - 1:
+                await self._invoke_enhancer(last_run_id=i)
+
+        print("\n--- Meta-Learning Framework Execution Complete ---")
+        best_run = sorted([r for r in self.run_history if r['best_score'] is not None], key=lambda x: x['best_score'])[0]
+        print(f"Best score of {best_run['best_score']} achieved in run {best_run['run_id']}.")
+        print(f"Find the best solution at: {os.path.join(self.workspace_root, best_run['best_solution_path'])}")
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    parser = argparse.ArgumentParser(description="MLE-STAR Meta-Learning Framework Orchestrator")
+    parser.add_argument("--task_name", type=str, default="california-housing-prices", help="Name of the task directory.")
+    parser.add_argument("--num_runs", type=int, default=3, help="Total number of enhancement loops to run.")
+    parser.add_argument("--initial_config_path", type=str, default=None, help="Path to a JSON file for initial config overrides.")
+    
+    args = parser.parse_args()
+
+    orchestrator = MetaOrchestrator(
+        task_name=args.task_name,
+        num_runs=args.num_runs,
+        initial_config_path=args.initial_config_path
+    )
+    asyncio.run(orchestrator.run())
+
+

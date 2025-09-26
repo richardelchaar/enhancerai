@@ -137,35 +137,37 @@ to implement this workflow.
 
 ## Running the Agent
 
-**Prepare your task**
+The MLE-STAR project now includes a powerful meta-learning framework that can run the agent pipeline multiple times, learning from each run to improve its strategy.
 
-You should prepare the inputs for your task in the following way:
+### **Primary Usage: The Meta-Learning Orchestrator (Recommended)**
 
-1. Create a folder under `tasks` with the name of your task.
-2. In that folder, create a file containing the description of the task.
-3. Place the data files in this folder.
-
-**Using `adk`**
-
-ADK provides convenient ways to bring up agents locally and interact with them.
-You may talk to the agent using the CLI:
+The recommended way to run the agent is through the new top-level orchestrator script, which manages the multi-run enhancement loop.
 
 ```bash
+# Activate your poetry environment first
+poetry env activate
+
+# Run the meta-orchestrator for 3 full cycles on the housing task
+python run_meta.py --task_name california-housing-prices --num_runs 3
+```
+
+This command will:
+
+1.  Execute the baseline MLE pipeline (Run 0).
+2.  Invoke the `Enhancer` agent to analyze the results.
+3.  Launch a new, strategically modified pipeline (Run 1).
+4.  Repeat the process for the specified number of runs.
+
+All logs, artifacts, and a summary of the entire process will be saved in the `machine_learning_engineering/workspace/california-housing-prices/` directory.
+
+### **Legacy Usage: Single Run via ADK**
+
+For debugging or simple, single-shot executions, you can still use the ADK CLI to run the `root_agent`.
+
+```bash
+# This will execute the pipeline once with the default configuration.
 adk run machine_learning_engineering
 ```
-
-Or via the Poetry shell:
-```bash
-poetry run adk run machine_learning_engineering
-```
-
-Or on a web interface:
-
-```bash
- adk web
-```
-
-The command `adk web` will start a web server on your machine and print the URL.
 
 ### Example Interaction
 
