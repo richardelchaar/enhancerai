@@ -19,10 +19,8 @@ google-cloud-aiplatform = { version = "^1.93", extras = [
 numpy = "^2.2.3"
 pandas = "^2.3.1"
 scikit-learn = "^1.7.1"
-# The CPU version of PyTorch is installed here. Change this is you need GPUs, or
-# want to use PyTorch on a different hardware architecture or CPU.
-# (https://download.pytorch.org/whl)
-torch = {version = "^2.7.1", source = "pytorch_cpu"}
+# Install PyTorch from the default index to allow macOS-compatible wheels
+torch = {version = "^2.7.1"}
 [tool.poetry.group.dev]
 optional = true
 
@@ -39,10 +37,7 @@ pytest-asyncio = "^0.26.0"
 numpy = "^2.2.3"
 pandas = "^2.3.1"
 scikit-learn = "^1.7.1"
-# The CPU version of PyTorch is installed here. Change this is you need GPUs, or
-# want to use PyTorch on a different hardware architecture or CPU.
-# (https://download.pytorch.org/whl)
-torch = {version = "^2.7.1", source = "pytorch_cpu"}
+torch = {version = "^2.7.1"}
 
 [tool.poetry.group.deployment]
 optional = true

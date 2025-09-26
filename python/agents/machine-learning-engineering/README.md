@@ -214,6 +214,25 @@ is functional. `eval` is a demonstration of how to evaluate the agent, using the
 that the agent's responses match a pre-defined response reasonablly well.
 
 
+## Multi-run orchestration
+
+You can execute the complete pipeline several times in succession using
+`machine_learning_engineering/multi_run.py`. The script relies on a JSON
+configuration; a template is available at
+`machine_learning_engineering/multi_run_config.sample.json`.
+
+```bash
+python -m machine_learning_engineering.multi_run \
+  --config machine_learning_engineering/multi_run_config.sample.json
+```
+
+Each run receives the previous run's `final_state.json` and the generated
+`enhancement_plan.json`. Guidance is injected automatically into subsequent
+runs and any `config_updates` suggested by the enhancement agent are merged into
+the configuration before the next execution. Artifacts are stored under
+`workspace/<task>/runs/run_<NN>/` for easy comparison.
+
+
 ## Deployment
 
 You will need to have specified a GCS bucket in the environment variable `GOOGLE_CLOUD_BUCKET` as detailed in the [Configuration](#configuration) section.

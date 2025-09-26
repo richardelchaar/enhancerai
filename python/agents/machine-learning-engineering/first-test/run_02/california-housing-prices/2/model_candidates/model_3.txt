@@ -1,0 +1,35 @@
+## Model name
+TabNet Regressor
+
+## Example Python code
+from pytorch_tabnet.tab_model import TabNetRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import numpy as np
+import torch
+
+# Assuming X, y are your features and target variable
+# X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# For demonstration, let's create dummy data
+np.random.seed(42)
+X_train = np.random.rand(100, 10).astype(np.float32)
+y_train = np.random.rand(100).astype(np.float32).reshape(-1, 1) * 100
+X_test = np.random.rand(50, 10).astype(np.float32)
+y_test = np.random.rand(50).astype(np.float32).reshape(-1, 1) * 100
+
+# Initialize and train the TabNet Regressor
+# patience=10, max_epochs=100 are for demonstration; usually higher values are used
+# 'mse' is a common loss for regression in TabNet; RMSE can be calculated from it.
+model = TabNetRegressor(verbose=0, seed=42)
+model.fit(X_train=X_train, y_train=y_train,
+          eval_set=[(X_test, y_test)],
+          eval_metric=['rmse'], # Specify RMSE as evaluation metric
+          patience=10, max_epochs=100)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Evaluate the model using RMSE
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+print(f"TabNet RMSE: {rmse}")

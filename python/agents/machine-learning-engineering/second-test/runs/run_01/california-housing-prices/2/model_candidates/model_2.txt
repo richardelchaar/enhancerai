@@ -1,0 +1,56 @@
+## Model name
+CatBoost
+
+## Example Python code
+from catboost import CatBoostRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import pandas as pd
+import numpy as np
+
+# Sample Data Generation (replace with your actual data loading)
+np.random.seed(42)
+num_samples = 1000
+data = pd.DataFrame({
+    'feature_1': np.random.rand(num_samples) * 100,
+    'feature_2': np.random.rand(num_samples) * 50,
+    'feature_3': np.random.randint(0, 5, num_samples),
+    'median_house_value': np.random.rand(num_samples) * 500000 + 100000 # Target variable
+})
+
+X = data.drop('median_house_value', axis=1)
+y = data['median_house_value']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Identify categorical features if any (for this sample, let's assume 'feature_3' is categorical)
+categorical_features_indices = [X.columns.get_loc(col) for col in X.select_dtypes(include=['object', 'category']).columns]
+# For numerical features treated as categories, you'd list their indices:
+# if 'feature_3' is truly categorical, even if numerical represented:
+categorical_features_indices.append(X.columns.get_loc('feature_3'))
+
+# Initialize CatBoost Regressor
+# Common parameters for regression task
+cat = CatBoostRegressor(
+    iterations=1000,           # Number of boosting rounds
+    learning_rate=0.05,        # Step size shrinkage
+    depth=6,                   # Depth of the tree
+    loss_function='RMSE',      # Objective function for regression
+    eval_metric='RMSE',        # Evaluation metric
+    random_seed=42,
+    verbose=False,             # Suppress training output
+    early_stopping_rounds=100  # Stop if RMSE on validation set doesn't improve for 100 rounds
+)
+
+# Train the model
+cat.fit(X_train, y_train,
+        eval_set=(X_test, y_test),
+        early_stopping_rounds=100,
+        cat_features=categorical_features_indices) # Pass categorical features
+
+# Make predictions
+y_pred_cat = cat.predict(X_test)
+
+# Evaluate the model (RMSE)
+rmse_cat = np.sqrt(mean_squared_error(y_test, y_pred_cat))
+print(f'CatBoost RMSE: {rmse_cat:.2f}')

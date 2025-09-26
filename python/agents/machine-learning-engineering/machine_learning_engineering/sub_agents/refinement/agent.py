@@ -49,13 +49,27 @@ def update_outer_loop_states(
         exec_result = callback_context.state.get(
             f"train_code_improve_exec_result_{inner_iter}_{step}_{task_id}", {}
         )
+        if not isinstance(exec_result, dict) or "score" not in exec_result:
+            continue
         if lower:
-            improvement = prev_exec_result["score"] - exec_result["score"]
+            improvement = prev_exec_result.get("score", float("inf")) - exec_result["score"]
         else:
-            improvement = exec_result["score"] - prev_exec_result["score"] 
-        improvements.append(improvement)
-    best_improvement = max(improvements)
-    best_idx = improvements.index(best_improvement)
+            improvement = exec_result["score"] - prev_exec_result.get("score", float("-inf")) 
+        improvements.append((improvement, inner_iter))
+    if not improvements:
+        callback_context.state[f"train_code_{step+1}_{task_id}"] = prev_solution
+        callback_context.state[f"train_code_exec_result_{step+1}_{task_id}"] = prev_exec_result
+        with open(os.path.join(run_cwd, f"train{step+1}.py"), "w", encoding="utf-8") as f:
+            f.write(prev_solution)
+        callback_context.state[f"prev_ablations_{task_id}"].append(
+            callback_context.state.get(f"ablation_summary_{step}_{task_id}", "")
+        )
+        callback_context.state[f"prev_code_blocks_{task_id}"].append(
+            callback_context.state.get(f"refine_code_block_{step}_{task_id}", "")
+        )
+        callback_context.state[f"refine_step_{task_id}"] += 1
+        return None
+    best_improvement, best_idx = max(improvements, key=lambda x: x[0])
     output_filepath = os.path.join(run_cwd, f"train{step+1}.py")
     if best_improvement <= 0.0:
         callback_context.state[
@@ -133,6 +147,16 @@ def get_ablation_agent_instruction(
         instruction = prompt.ABLATION_INSTR.format(
             code=code,
         )
+    guidance = common_util.get_run_guidance(context, "refinement")
+    if guidance:
+        requirements = common_util.extract_guidance_requirements(guidance)
+        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
+        if requirements:
+            instruction += "\n\n# Mandatory directives\n"
+            instruction += "\n".join(f"- {item}" for item in requirements)
+            instruction += (
+                "\n\nList these directives in your plan and reference the code blocks that will be updated."
+            )
     return instruction
 
 
@@ -144,10 +168,21 @@ def get_ablation_summary_agent_instruction(
     step = context.state.get(f"refine_step_{task_id}", 0)
     code = context.state.get(f"ablation_code_{step}_{task_id}", "")
     result_dict = context.state.get(f"ablation_code_exec_result_{step}_{task_id}", {})
-    return prompt.SUMMARIZE_ABLATION_INSTR.format(
+    instruction = prompt.SUMMARIZE_ABLATION_INSTR.format(
         code=code,
         result=result_dict["ablation_result"],
     )
+    guidance = common_util.get_run_guidance(context, "refinement")
+    if guidance:
+        requirements = common_util.extract_guidance_requirements(guidance)
+        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
+        if requirements:
+            instruction += "\n\n# Mandatory directives\n"
+            instruction += "\n".join(f"- {item}" for item in requirements)
+            instruction += (
+                "\n\nSummaries must state whether each directive was satisfied."
+            )
+    return instruction
 
 
 def get_init_plan_agent_instruction(
@@ -170,6 +205,16 @@ def get_init_plan_agent_instruction(
             ablation_results=ablation_results,
             prev_code_blocks=prev_code_blocks,
         )
+    guidance = common_util.get_run_guidance(context, "refinement")
+    if guidance:
+        requirements = common_util.extract_guidance_requirements(guidance)
+        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
+        if requirements:
+            instruction += "\n\n# Mandatory directives\n"
+            instruction += "\n".join(f"- {item}" for item in requirements)
+            instruction += (
+                "\n\nYour plan must explicitly cover each directive; include a checklist mapping plan steps to them."
+            )
     return instruction
 
 
@@ -201,10 +246,21 @@ def get_plan_refinement_instruction(
         prev_plan_summary += f"## Plan: {curr_plan}\n"
         prev_plan_summary += f"## Execution time after implement: {execution_time}s\n"
         prev_plan_summary += f"## Score: {score:.5f}\n\n"
-    return prompt.PLAN_REFINEMENT_INSTR.format(
+    instruction = prompt.PLAN_REFINEMENT_INSTR.format(
         code_block=code_block,
         prev_plan_summary=prev_plan_summary,
     )
+    guidance = common_util.get_run_guidance(context, "refinement")
+    if guidance:
+        requirements = common_util.extract_guidance_requirements(guidance)
+        instruction += "\n\n# Previous run guidance (MANDATORY)\n" + guidance
+        if requirements:
+            instruction += "\n\n# Mandatory directives\n"
+            instruction += "\n".join(f"- {item}" for item in requirements)
+            instruction += (
+                "\n\nYour implementation must demonstrate concrete changes for each directive; highlight them in the code."
+            )
+    return instruction
 
 
 def get_plan_implement_agent_instruction(
@@ -215,10 +271,14 @@ def get_plan_implement_agent_instruction(
     step = context.state.get(f"refine_step_{task_id}", 0)
     code_block = context.state.get(f"refine_code_block_{step}_{task_id}", "")
     plan = context.state.get(f"refine_plans_{step}_{task_id}", [""])[-1]
-    return prompt.IMPLEMENT_PLAN_INSTR.format(
+    instruction = prompt.IMPLEMENT_PLAN_INSTR.format(
         code_block=code_block,
         plan=plan,
     )
+    guidance = common_util.get_run_guidance(context, "refinement")
+    if guidance:
+        instruction += "\n\n# Previous run guidance\n" + guidance
+    return instruction
 
 
 def check_ablation_finish(
@@ -317,147 +377,114 @@ def get_refined_plan(
 
 
 use_data_leakage_checker = config.CONFIG.use_data_leakage_checker
-refinement_parallel_sub_agents = []
-for k in range(config.CONFIG.num_solutions):
-    ablation_agent = agents.Agent(
-        model=config.CONFIG.agent_model,
-        name=f"ablation_agent_{k+1}",
-        description="Perform ablation studies to improve the solution.",
-        instruction=get_ablation_agent_instruction,
-        before_model_callback=check_ablation_finish,
-        after_model_callback=functools.partial(
-            debug_util.get_code_from_response,
-            do_eval=not use_data_leakage_checker,
-        ),
-        generate_content_config=types.GenerateContentConfig(
-            temperature=1.0,
-        ),
-        include_contents="none",
-    )
-    ablation_sequential_sub_agents = [ablation_agent]
-    if use_data_leakage_checker:
-        data_leakage_checker_agent = check_leakage_util.get_data_leakage_checker_agent(
+def build_agent() -> agents.ParallelAgent:
+    """Constructs the refinement agent graph using the latest config."""
+
+    refinement_parallel_sub_agents = []
+    for k in range(config.CONFIG.num_solutions):
+        ablation_and_debug_loop_agent = debug_util.get_run_and_debug_agent(
             prefix="ablation",
             suffix=f"{k+1}",
+            agent_description="Generate an ablation study.",
+            instruction_func=get_ablation_agent_instruction,
         )
-        ablation_sequential_sub_agents.append(data_leakage_checker_agent)
-        additional_agent_description = " and check if there are data leakage issues"
-    else:
-        additional_agent_description = ""
-    ablation_sequential_agent = agents.SequentialAgent(
-        name=f"ablation_sequential_agent_{k+1}",
-        description=f"Perform ablation studies{additional_agent_description}.",
-        sub_agents=ablation_sequential_sub_agents,
+        ablation_summary_agent = agents.Agent(
+            model=config.CONFIG.agent_model,
+            name=f"ablation_summary_agent_{k+1}",
+            description="Summarize the ablation study results.",
+            instruction=get_ablation_summary_agent_instruction,
+            after_model_callback=get_ablation_summary,
+            generate_content_config=types.GenerateContentConfig(
+                temperature=0.0,
+            ),
+            include_contents="none",
+        )
+        init_plan_agent = agents.Agent(
+            model=config.CONFIG.agent_model,
+            name=f"init_plan_agent_{k+1}",
+            description="Plan the refinement of the solution.",
+            instruction=get_init_plan_agent_instruction,
+            after_model_callback=get_refine_plan,
+            generate_content_config=types.GenerateContentConfig(
+                temperature=0.6,
+            ),
+            include_contents="none",
+        )
+        init_plan_loop_agent = agents.LoopAgent(
+            name=f"init_plan_loop_agent_{k+1}",
+            description="Plan the refinement of the solution until it succeeds.",
+            sub_agents=[init_plan_agent],
+            before_agent_callback=init_inner_loop_states,
+            max_iterations=config.CONFIG.max_debug_round,
+        )
+        init_plan_implement_agent = debug_util.get_run_and_debug_agent(
+            prefix="plan_implement_initial",
+            suffix=f"{k+1}",
+            agent_description="Implement the initial refinement plan.",
+            instruction_func=get_plan_implement_agent_instruction,
+            before_model_callback=check_plan_implement_finish,
+        )
+        plan_refine_agent = agents.Agent(
+            model=config.CONFIG.agent_model,
+            name=f"plan_refine_agent_{k+1}",
+            description="Refine the improvement plan.",
+            instruction=get_plan_refine_agent_instruction,
+            after_model_callback=get_refine_plan,
+            generate_content_config=types.GenerateContentConfig(
+                temperature=0.7,
+            ),
+            include_contents="none",
+        )
+        plan_implement_agent = debug_util.get_run_and_debug_agent(
+            prefix="plan_implement",
+            suffix=f"{k+1}",
+            agent_description="Implement the plan to generate a solution.",
+            instruction_func=get_plan_implement_agent_instruction,
+            before_model_callback=check_plan_implement_finish,
+        )
+        plan_refine_and_implement_agent = agents.SequentialAgent(
+            name=f"plan_refine_and_implement_agent_{k+1}",
+            description="Refine the plan and then implement it.",
+            sub_agents=[
+                plan_refine_agent,
+                plan_implement_agent,
+            ],
+            after_agent_callback=update_inner_loop_states,
+        )
+        refine_inner_loop_agent = agents.LoopAgent(
+            name=f"refine_inner_loop_agent_{k+1}",
+            description="Refine the given solution.",
+            sub_agents=[plan_refine_and_implement_agent],
+            before_agent_callback=update_inner_loop_states,
+            max_iterations=config.CONFIG.inner_loop_round,
+        )
+        ablation_and_refine_agent = agents.SequentialAgent(
+            name=f"ablation_and_refine_agent_{k+1}",
+            description="Perform ablation study and refine the code.",
+            sub_agents=[
+                ablation_and_debug_loop_agent,
+                ablation_summary_agent,
+                init_plan_loop_agent,
+                init_plan_implement_agent,
+                refine_inner_loop_agent,
+            ],
+            after_agent_callback=update_outer_loop_states,
+        )
+        ablation_and_refine_loop_agent = agents.LoopAgent(
+            name=f"ablation_and_refine_loop_agent_{k+1}",
+            description="Perform ablation study and refine the code for multiple rounds.",
+            sub_agents=[ablation_and_refine_agent],
+            before_agent_callback=init_outer_loop_states,
+            max_iterations=config.CONFIG.outer_loop_round,
+        )
+        refinement_parallel_sub_agents.append(ablation_and_refine_loop_agent)
+
+    return agents.ParallelAgent(
+        name="refinement_agent",
+        description="Refine each solution by performing ablation studies.",
+        sub_agents=refinement_parallel_sub_agents,
+        before_agent_callback=None,
     )
-    debug_inner_loop_agent = debug_util.get_debug_inner_loop_agent(
-        prefix="ablation",
-        suffix=f"{k+1}",
-    )
-    ablation_and_debug_loop_agent = agents.LoopAgent(
-        name=f"ablation_and_debug_loop_agent_{k+1}",
-        description="Perform ablation studies and debug the code until it succeeds.",
-        sub_agents=[
-            ablation_sequential_agent,
-            debug_inner_loop_agent,
-        ],
-        max_iterations=config.CONFIG.max_rollback_round,
-    )
-    ablation_summary_agent = agents.Agent(
-        model=config.CONFIG.agent_model,
-        name=f"ablation_summary_agent_{k+1}",
-        description="Summarize the ablation study results.",
-        instruction=get_ablation_summary_agent_instruction,
-        after_model_callback=get_ablation_summary,
-        generate_content_config=types.GenerateContentConfig(
-            temperature=0.0,
-        ),
-        include_contents="none",
-    )
-    init_plan_agent = agents.Agent(
-        model=config.CONFIG.agent_model,
-        name=f"init_plan_agent_{k+1}",
-        description="Generate an initial plan and a code block.",
-        instruction=get_init_plan_agent_instruction,
-        before_model_callback=check_init_plan_finish,
-        after_model_callback=get_plan_and_code_block,
-        generate_content_config=types.GenerateContentConfig(
-            temperature=1.0,
-        ),
-        include_contents="none",
-    )
-    init_plan_loop_agent = agents.LoopAgent(
-        name=f"init_plan_loop_agent_{k+1}",
-        description=(
-            "Generate an initial plan and a code block until the code block is valid."
-        ),
-        sub_agents=[init_plan_agent],
-        before_agent_callback=init_inner_loop_states,
-        max_iterations=config.CONFIG.max_retry,
-    )
-    init_plan_implement_agent = debug_util.get_run_and_debug_agent(
-        prefix="plan_implement_initial",
-        suffix=f"{k+1}",
-        agent_description="Implement the initial plan to generate a solution.",
-        instruction_func=get_plan_implement_agent_instruction,
-        before_model_callback=check_plan_implement_finish,
-    )
-    plan_refine_agent = agents.Agent(
-        model=config.CONFIG.agent_model,
-        name=f"plan_refine_agent_{k+1}",
-        description="Refine the plan.",
-        instruction=get_plan_refinement_instruction,
-        after_model_callback=get_refined_plan,
-        generate_content_config=types.GenerateContentConfig(
-            temperature=1.0,
-        ),
-        include_contents="none",
-    )
-    plan_implement_agent = debug_util.get_run_and_debug_agent(
-        prefix="plan_implement",
-        suffix=f"{k+1}",
-        agent_description="Implement the plan to generate a solution.",
-        instruction_func=get_plan_implement_agent_instruction,
-        before_model_callback=check_plan_implement_finish,
-    )
-    plan_refine_and_implement_agent = agents.SequentialAgent(
-        name=f"plan_refine_and_implement_agent_{k+1}",
-        description="Refine the plan and then implement it.",
-        sub_agents=[
-            plan_refine_agent,
-            plan_implement_agent,
-        ],
-        after_agent_callback=update_inner_loop_states,
-    )
-    refine_inner_loop_agent = agents.LoopAgent(
-        name=f"refine_inner_loop_agent_{k+1}",
-        description="Refine the given solution.",
-        sub_agents=[plan_refine_and_implement_agent],
-        before_agent_callback=update_inner_loop_states,
-        max_iterations=config.CONFIG.inner_loop_round,
-    )
-    ablation_and_refine_agent = agents.SequentialAgent(
-        name=f"ablation_and_refine_agent_{k+1}",
-        description="Perform ablation study and refine the code.",
-        sub_agents=[
-            ablation_and_debug_loop_agent,
-            ablation_summary_agent,
-            init_plan_loop_agent,
-            init_plan_implement_agent,
-            refine_inner_loop_agent,
-        ],
-        after_agent_callback=update_outer_loop_states,
-    )
-    ablation_and_refine_loop_agent = agents.LoopAgent(
-        name=f"ablation_and_refine_loop_agent_{k+1}",
-        description="Perform ablation study and refine the code for multiple rounds.",
-        sub_agents=[ablation_and_refine_agent],
-        before_agent_callback=init_outer_loop_states,
-        max_iterations=config.CONFIG.outer_loop_round,
-    )
-    refinement_parallel_sub_agents.append(ablation_and_refine_loop_agent)
-refinement_agent = agents.ParallelAgent(
-    name="refinement_agent",
-    description="Refine each solution by performing ablation studies.",
-    sub_agents=refinement_parallel_sub_agents,
-    before_agent_callback=None,
-)
+
+
+__all__ = ["build_agent"]
