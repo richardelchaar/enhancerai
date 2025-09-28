@@ -197,6 +197,10 @@ def evaluate_code(
         suffix=suffix,
     )
     raw_code = callback_context.state.get(code_state_key, "")
+    
+    # FIX: This block logic needs to be more specific.
+    # It was failing to correctly determine the `task_id` for the run directory,
+    # and was putting submission artifacts in the wrong place.
     if agent_name.startswith("model_eval"):
         model_id = agent_name.split("_")[-1]
         task_id = agent_name.split("_")[-2]
@@ -221,17 +225,18 @@ def evaluate_code(
         task_id = "ensemble"
         py_filepath = f"ensemble{suffix}.py"
     elif agent_name.startswith("submission"):
+        # Submission operates in the 'ensemble' directory.
         task_id = "ensemble"
         py_filepath = "final_solution.py"
     else:
         raise ValueError(f"Unexpected agent name: {agent_name}.")
+    
     if get_run_code_condition(
         agent_name=agent_name,
         raw_code=raw_code,
     ):
         workspace_dir = callback_context.state.get("workspace_dir", "")
-        task_name = callback_context.state.get("task_name", "")
-        run_cwd = os.path.join(workspace_dir, task_name, task_id)
+        run_cwd = os.path.join(workspace_dir, task_id)
         result_dict = run_python_code(
             code_text=raw_code,
             run_cwd=run_cwd,
