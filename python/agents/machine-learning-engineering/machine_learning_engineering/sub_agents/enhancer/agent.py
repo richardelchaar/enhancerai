@@ -16,15 +16,37 @@ def get_enhancer_instruction(
     context: callback_context_module.ReadonlyContext,
 ) -> str:
     """Dynamically builds the instruction for the Enhancer agent."""
-    last_run_id = len(context.state.get("run_history_summary", [])) - 1
-    last_run_summary = context.state.get("run_history_summary", [])[last_run_id]
-    
+    run_history_summary = context.state.get("run_history_summary")
+    if not run_history_summary:
+        history_json = context.state.get("run_history_summary_json")
+        if history_json:
+            try:
+                run_history_summary = json.loads(history_json)
+            except json.JSONDecodeError:
+                run_history_summary = []
+        else:
+            run_history_summary = []
+
+    last_run_id = len(run_history_summary) - 1
+    last_run_summary = run_history_summary[last_run_id] if last_run_id >= 0 else {}
+
+    last_run_final_state = context.state.get("last_run_final_state")
+    if not last_run_final_state:
+        final_state_json = context.state.get("last_run_final_state_json")
+        if final_state_json:
+            try:
+                last_run_final_state = json.loads(final_state_json)
+            except json.JSONDecodeError:
+                last_run_final_state = {}
+        else:
+            last_run_final_state = {}
+
     return prompt.ENHANCER_AGENT_INSTR.format(
         last_run_id=last_run_id,
         prev_run_id=max(last_run_id - 1, 0),
         next_run_id=last_run_id + 1,
-        last_run_final_state=json.dumps(context.state.get("last_run_final_state", {}), indent=2),
-        run_history_summary=json.dumps(context.state.get("run_history_summary", []), indent=2),
+        last_run_final_state=json.dumps(last_run_final_state, indent=2),
+        run_history_summary=json.dumps(run_history_summary, indent=2),
         last_run_score=last_run_summary.get("best_score"),
         best_score_so_far=context.state.get("best_score_so_far"),
         last_run_time=last_run_summary.get("duration_seconds")
@@ -48,8 +70,9 @@ def parse_enhancer_output(
         enhancer_output = json.loads(json_str)
 
         # Basic schema validation
-        if "strategic_summary" not in enhancer_output or "config_overrides" not in enhancer_output:
-            raise ValueError("Enhancer output missing required keys.")
+        required_keys = ["strategic_summary", "config_overrides", "strategic_goals"]
+        if not all(key in enhancer_output for key in required_keys):
+            raise ValueError(f"Enhancer output missing required keys: {required_keys}")
             
         callback_context.state["enhancer_output"] = enhancer_output
 
@@ -59,7 +82,7 @@ def parse_enhancer_output(
         callback_context.state["enhancer_output"] = {
             "strategic_summary": "Error parsing previous output. Retrying with default configuration.",
             "config_overrides": {},
-            "directives": []
+            "strategic_goals": []
         }
     return None
 
@@ -72,5 +95,4 @@ enhancer_agent = agents.Agent(
     after_model_callback=parse_enhancer_output,
     generate_content_config=types.GenerateContentConfig(temperature=0.7),
 )
-
 

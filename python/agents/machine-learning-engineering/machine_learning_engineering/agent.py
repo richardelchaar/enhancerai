@@ -1,5 +1,8 @@
 """Demonstration of Machine Learning Engineering Agent using Agent Development Kit"""
 
+# Import compatibility fixes first
+from machine_learning_engineering.shared_libraries import aiohttp_compat
+
 import os
 import json
 from typing import Optional

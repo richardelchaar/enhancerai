@@ -1,0 +1,29 @@
+Here are three recent effective models with example Python code to win a tabular regression competition, focusing on predicting `median_house_value` with `root_mean_squared_error` (RMSE) as the evaluation metric. These models are widely recognized for their performance on tabular data.
+
+```json
+[
+  {
+    "model_name": "LightGBM Regressor",
+    "example_code": "import pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nimport lightgbm as lgb\n\n# --- 1. Generate dummy data for demonstration ---\n# In a real scenario, X would be your features and y your target (median_house_value)\nX = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])\ny = pd.Series(np.random.rand(1000) * 100000 + 50000) # Dummy house values\n\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# --- 2. Initialize and Train LightGBM Regressor ---\n# Parameters are often tuned for optimal performance, but defaults often provide a strong baseline.\n# objective='regression' is for standard regression.\n# metric='rmse' specifies the evaluation metric.\nmodel = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42)\nmodel.fit(X_train, y_train)\n\n# --- 3. Make Predictions ---\ny_pred = model.predict(X_test)\n\n# --- 4. Evaluate the Model (RMSE) ---\nrmse = np.sqrt(mean_squared_error(y_test, y_pred))\nprint(f\"LightGBM RMSE: {rmse:.4f}\")\n"
+  },
+  {
+    "model_name": "XGBoost Regressor",
+    "example_code": "import pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nimport xgboost as xgb\n\n# --- 1. Generate dummy data for demonstration ---\nX = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])\ny = pd.Series(np.random.rand(1000) * 100000 + 50000)\n\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# --- 2. Initialize and Train XGBoost Regressor ---\n# objective='reg:squarederror' is standard for regression problems, minimizing squared error.\n# eval_metric='rmse' explicitly sets the evaluation metric to RMSE.\nmodel = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42)\nmodel.fit(X_train, y_train)\n\n# --- 3. Make Predictions ---\ny_pred = model.predict(X_test)\n\n# --- 4. Evaluate the Model (RMSE) ---\nrmse = np.sqrt(mean_squared_error(y_test, y_pred))\nprint(f\"XGBoost RMSE: {rmse:.4f}\")\n"
+  },
+  {
+    "model_name": "CatBoost Regressor",
+    "example_code": "import pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nfrom catboost import CatBoostRegressor\n\n# --- 1. Generate dummy data for demonstration ---\nX = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])\ny = pd.Series(np.random.rand(1000) * 100000 + 50000)\n\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# --- 2. Initialize and Train CatBoost Regressor ---\n# loss_function='RMSE' directly optimizes for Root Mean Squared Error.\n# CatBoost handles categorical features automatically if specified via 'cat_features' parameter.\nmodel = CatBoostRegressor(loss_function='RMSE', random_seed=42, verbose=0) # verbose=0 to suppress output during training\nmodel.fit(X_train, y_train)\n\n# --- 3. Make Predictions ---\ny_pred = model.predict(X_test)\n\n# --- 4. Evaluate the Model (RMSE) ---\nrmse = np.sqrt(mean_squared_error(y_test, y_pred))\nprint(f\"CatBoost RMSE: {rmse:.4f}\")\n"
+  }
+]
+```
+### 1. LightGBM Regressor
+
+LightGBM (Light Gradient Boosting Machine) is a gradient boosting framework that uses tree-based learning algorithms. It is designed to be distributed and efficient, often outperforming other gradient boosting frameworks like XGBoost in terms of speed and memory usage, especially on large datasets. It grows trees leaf-wise rather than level-wise, which can lead to faster convergence.
+
+### 2. XGBoost Regressor
+
+XGBoost (Extreme Gradient Boosting) is an optimized distributed gradient boosting library designed to be highly efficient, flexible, and portable. It has become a dominant algorithm for tabular data, recognized for its speed and performance. XGBoost provides parallel tree boosting and is known for its ability to handle various data types and relationships effectively.
+
+### 3. CatBoost Regressor
+
+CatBoost (Categorical Boosting) is a high-performance open-source gradient boosting library developed by Yandex. Its key advantage lies in its native handling of categorical features, which it does internally without requiring explicit one-hot encoding or other preprocessing steps, often leading to better performance and reduced overfitting. It also employs an ordered boosting scheme to combat prediction shift, further enhancing its robustness.

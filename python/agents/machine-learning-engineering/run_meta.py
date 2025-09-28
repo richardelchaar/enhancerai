@@ -4,7 +4,11 @@ Main entry point for the MLE-STAR Meta-Learning Framework.
 This orchestrator manages the N-run process, invoking the MLE-STAR pipeline,
 collecting results, and using the Enhancer agent to strategize for subsequent runs.
 """
+# Import compatibility fixes first
+from machine_learning_engineering.shared_libraries import aiohttp_compat
+
 import argparse
+import dataclasses
 import json
 import os
 import shutil
@@ -53,6 +57,7 @@ class MetaOrchestrator:
         """Determines the configuration for the current run."""
         # Start with a fresh copy of the defaults
         current_config = config.DefaultConfig()
+        enhancer_output: Dict[str, Any] = {}
 
         if run_id == 0:
             # For the first run, apply any user-provided initial overrides
@@ -65,16 +70,22 @@ class MetaOrchestrator:
             prev_run_summary = self.run_history[-1]
             enhancer_output = prev_run_summary.get("enhancer_output", {})
             overrides = enhancer_output.get("config_overrides", {})
-            for key, value in overrides.items():
-                if hasattr(current_config, key):
-                    setattr(current_config, key, value)
-            print(f"Run {run_id}: Applying enhanced configuration from previous run.")
+            if config.CONFIG.allow_config_override:
+                for key, value in overrides.items():
+                    if hasattr(current_config, key):
+                        setattr(current_config, key, value)
+                        print(f"  - Overriding config '{key}' with value '{value}'")
+                print(f"Run {run_id}: Applying enhanced configuration from previous run.")
+            else:
+                print(f"Run {run_id}: allow_config_override is False. Using default config.")
         
-        # Ensure task_name is always set correctly
-        current_config.task_name = self.task_name
-        return current_config
+        # Convert config to a plain dictionary (defensive copy) and inject enhancer output
+        run_config_dict = dataclasses.asdict(current_config)
+        run_config_dict["enhancer_output"] = enhancer_output
+        run_config_dict["task_name"] = self.task_name
+        return run_config_dict
 
-    async def _execute_pipeline_run(self, run_id: int, run_config: config.DefaultConfig):
+    async def _execute_pipeline_run(self, run_id: int, run_config: Dict[str, Any]):
         """Executes a single, isolated run of the MLE-STAR pipeline."""
         print(f"\n--- Starting MLE-STAR Pipeline: Run {run_id} ---")
         run_dir = os.path.join(self.workspace_root, f"run_{run_id}")
@@ -84,18 +95,18 @@ class MetaOrchestrator:
         
         # Override the default workspace to isolate this run
         # Ensures all artifacts for this run go under: workspace_root/run_{id}/
-        run_config.workspace_dir = run_dir
-        
+        run_config["workspace_dir"] = run_dir
+
+        # Ensure sub-agents that consult the global CONFIG see the overrides for this run.
+        overrides_snapshot = self._apply_global_config_overrides(run_config)
+
         # Build initial session state
-        initial_state: Dict[str, Any] = {**run_config.__dict__}
+        initial_state: Dict[str, Any] = {**run_config}
+        initial_state["run_dir"] = run_dir
         initial_state["run_id"] = run_id
 
         runner = InMemoryRunner(agent=mle_pipeline_agent, app_name="mle-meta-pipeline")
         try:
-            # Also override the global CONFIG so sub-agents that read CONFIG don't overwrite the session state
-            prev_workspace_dir = config.CONFIG.workspace_dir
-            config.CONFIG.workspace_dir = run_dir
-
             session = await runner.session_service.create_session(
                 app_name=runner.app_name,
                 user_id=f"meta-user-{run_id}",
@@ -121,10 +132,10 @@ class MetaOrchestrator:
         finally:
             # Restore global config and close runner
             try:
-                config.CONFIG.workspace_dir = prev_workspace_dir
-            except Exception:
-                pass
-            await runner.close()
+                await runner.close()
+            finally:
+                for key, value in overrides_snapshot.items():
+                    setattr(config.CONFIG, key, value)
 
         # Save the complete state for this run for analysis by the Enhancer
         with open(os.path.join(run_dir, "final_state.json"), "w") as f:
@@ -161,7 +172,7 @@ class MetaOrchestrator:
             "start_time_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(final_state.get("start_time", time.time()))),
             "duration_seconds": round(time.time() - final_state.get("start_time", time.time())),
             "best_score": best_score,
-            "best_solution_path": f"run_{run_id}/final/final_solution.py",
+            "best_solution_path": f"run_{run_id}/ensemble/final_solution.py",
             "config_used": {k: v for k, v in final_state.items() if isinstance(v, (int, str, bool, float))},
             "enhancer_rationale": "Baseline run." if run_id == 0 else self.run_history[-1].get("enhancer_output", {}).get("strategic_summary", "N/A")
         }
@@ -182,6 +193,10 @@ class MetaOrchestrator:
         enhancer_initial_state: Dict[str, Any] = {}
         enhancer_initial_state["last_run_final_state"] = last_run_state
         enhancer_initial_state["run_history_summary"] = self.run_history
+        # Provide JSON-string copies as a fallback in case nested structures are
+        # cleaned from the session state by downstream agents.
+        enhancer_initial_state["last_run_final_state_json"] = json.dumps(last_run_state)
+        enhancer_initial_state["run_history_summary_json"] = json.dumps(self.run_history)
         scores = [r['best_score'] for r in self.run_history if r['best_score'] is not None]
         enhancer_initial_state["best_score_so_far"] = min(scores) if scores else None
 
@@ -216,6 +231,19 @@ class MetaOrchestrator:
         
         print(f"Enhancer Rationale: {enhancer_output.get('strategic_summary', 'No summary provided.')}")
         return enhancer_output
+
+    def _apply_global_config_overrides(self, run_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Updates the shared CONFIG module state with run-specific overrides.
+
+        Returns a snapshot of the original values so they can be restored after the run.
+        """
+        overrides_snapshot: Dict[str, Any] = {}
+        for key, value in run_config.items():
+            if hasattr(config.CONFIG, key):
+                overrides_snapshot[key] = getattr(config.CONFIG, key)
+        for key in overrides_snapshot:
+            setattr(config.CONFIG, key, run_config[key])
+        return overrides_snapshot
 
     async def run(self):
         """Executes the full meta-learning loop for N runs."""
@@ -256,5 +284,3 @@ if __name__ == "__main__":
         initial_config_path=args.initial_config_path
     )
     asyncio.run(orchestrator.run())
-
-

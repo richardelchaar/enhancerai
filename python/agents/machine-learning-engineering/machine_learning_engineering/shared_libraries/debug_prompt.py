@@ -26,4 +26,5 @@ BUG_REFINE_INSTR = """# Task description
 - Remember to print a line in the code with 'Final Validation Performance: {{final_validation_score}}' so we can parse performance.
 - The code should be a single-file python program that is self-contained and can be executed as-is.
 - Your response should only contain a single code block.
-- Do not use exit() function in the refined Python code."""
+- Do not use exit() function in the refined Python code.
+- IMPORTANT: Suppress all verbose model output (use verbose=0, silent=True, etc.) to prevent excessive logging."""

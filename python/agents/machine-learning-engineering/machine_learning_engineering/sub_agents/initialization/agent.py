@@ -27,30 +27,68 @@ def get_model_candidates(
     """Gets the model candidates."""
     task_id = callback_context.agent_name.split("_")[-1]
     workspace_dir = callback_context.state.get("workspace_dir", "")
-    task_name = callback_context.state.get("task_name", "")
-    num_model_candidates = callback_context.state.get("num_model_candidates", 2) 
-    run_cwd = os.path.join(workspace_dir, task_name, task_id)
+    num_model_candidates = callback_context.state.get("num_model_candidates", 2)
+    # workspace_dir already points to run_*, only append task_id
+    run_cwd = os.path.join(workspace_dir, task_id)
+    mc_dir = os.path.join(run_cwd, "model_candidates")
     try:
+        os.makedirs(mc_dir, exist_ok=True)
         response_text = common_util.get_text_from_response(llm_response)
-        start_idx, end_idx = response_text.find("["), response_text.rfind("]")+1
-        result = response_text[start_idx:end_idx]
-        models = ast.literal_eval(result)[:num_model_candidates]
-        for j, model in enumerate(models):
-            model_description = ""
-            model_description += f"## Model name\n"
-            model_description += model["model_name"]
-            model_description += "\n\n"
-            model_description += f"## Example Python code\n"
-            model_description += model["example_code"]
-            callback_context.state[f"init_{task_id}_model_{j+1}"] = {
-                "model_name": model["model_name"],
-                "example_code": model["example_code"],
-                "model_description": model_description,
-            }
-            with open(os.path.join(run_cwd, "model_candidates", f"model_{j+1}.txt"), "w") as f:
-                f.write(model_description)
-        callback_context.state[f"init_{task_id}_model_finish"] = True
-    except:
+        # Persist raw response for debugging
+        with open(os.path.join(mc_dir, "raw_response.txt"), "w", encoding="utf-8") as rf:
+            rf.write(response_text)
+
+        # Robust parsing of a list of model dicts
+        bracket_start, bracket_end = response_text.find("["), response_text.rfind("]")
+        if bracket_start != -1 and bracket_end != -1 and bracket_end > bracket_start:
+            candidate_str = response_text[bracket_start: bracket_end + 1]
+        else:
+            candidate_str = response_text.strip()
+
+        models_parsed: list = []
+        try:
+            models_parsed = ast.literal_eval(candidate_str)
+        except Exception:
+            try:
+                import json as _json
+                models_parsed = _json.loads(candidate_str)
+            except Exception:
+                models_parsed = []
+
+        written = 0
+        if isinstance(models_parsed, list):
+            for j, model in enumerate(models_parsed[:num_model_candidates]):
+                if not isinstance(model, dict):
+                    continue
+                model_name = model.get("model_name") or model.get("name") or f"candidate_{j+1}"
+                example_code = model.get("example_code") or model.get("code") or ""
+                model_description = (
+                    "## Model name\n" + str(model_name) + "\n\n" +
+                    "## Example Python code\n" + str(example_code)
+                )
+                callback_context.state[f"init_{task_id}_model_{j+1}"] = {
+                    "model_name": model_name,
+                    "example_code": example_code,
+                    "model_description": model_description,
+                }
+                with open(os.path.join(mc_dir, f"model_{j+1}.txt"), "w", encoding="utf-8") as f:
+                    f.write(model_description)
+                written += 1
+
+        if written > 0:
+            callback_context.state[f"init_{task_id}_model_finish"] = True
+        else:
+            # Leave finish False so the loop retries; drop a hint file
+            with open(os.path.join(mc_dir, "README.txt"), "w", encoding="utf-8") as f:
+                f.write(
+                    "No parsable model candidates were found. Raw LLM response saved to raw_response.txt.\n"
+                    "Expected a list of objects with keys 'model_name' and 'example_code'.\n"
+                )
+    except Exception as e:
+        # Capture parsing/writing errors to help debugging
+        os.makedirs(mc_dir, exist_ok=True)
+        with open(os.path.join(mc_dir, "error.txt"), "w", encoding="utf-8") as ef:
+            ef.write(str(e))
         return None
     return None
 
@@ -136,9 +174,9 @@ def rank_candidate_solutions(
 ) -> Optional[types.Content]:
     """Ranks the candidate solutions based on their scores."""
     workspace_dir = callback_context.state.get("workspace_dir", "")
-    task_name = callback_context.state.get("task_name", "")
     task_id = callback_context.agent_name.split("_")[-1]
-    run_cwd = os.path.join(workspace_dir, task_name, task_id)
+    # FIX: workspace_dir now already contains the run path, don't add task_name again
+    run_cwd = os.path.join(workspace_dir, task_id)
     num_model_candidates = callback_context.state.get("num_model_candidates", 2)
     performance_results = []
     for k in range(num_model_candidates):
@@ -173,9 +211,9 @@ def select_best_solution(
 ) -> Optional[types.Content]:
     """Selects the best solution."""
     workspace_dir = callback_context.state.get("workspace_dir", "")
-    task_name = callback_context.state.get("task_name", "")
     task_id = callback_context.agent_name.split("_")[-1]
-    run_cwd = os.path.join(workspace_dir, task_name, task_id)
+    # FIX: workspace_dir now already contains the run path, don't add task_name again
+    run_cwd = os.path.join(workspace_dir, task_id)
     best_idx = callback_context.state.get(f"best_idx_{task_id}", 0)
     response = callback_context.state.get(f"merger_code_{task_id}_{best_idx}", "")
     result_dict = callback_context.state.get(
@@ -248,29 +286,32 @@ def create_workspace(
 ) -> Optional[types.Content]:
     """Creates workspace."""
     data_dir = callback_context.state.get("data_dir", "")
-    workspace_dir = callback_context.state.get("workspace_dir", "")
     task_name = callback_context.state.get("task_name", "")
     task_id = callback_context.agent_name.split("_")[-1]
-    run_cwd = os.path.join(workspace_dir, task_name, task_id)
+    
+    # FIX: workspace_dir now already contains the run path, don't add task_name again
+    workspace_dir = callback_context.state.get("workspace_dir", "")
+    run_cwd = os.path.join(workspace_dir, task_id)
+    
     if os.path.exists(run_cwd):
       shutil.rmtree(run_cwd)
     # make required directories
-    os.makedirs(os.path.join(workspace_dir, task_name, task_id), exist_ok=True)
-    os.makedirs(os.path.join(workspace_dir, task_name, task_id, "input"), exist_ok=True)
-    os.makedirs(os.path.join(workspace_dir, task_name, task_id, "model_candidates"), exist_ok=True)
+    os.makedirs(run_cwd, exist_ok=True)
+    os.makedirs(os.path.join(run_cwd, "input"), exist_ok=True)
+    os.makedirs(os.path.join(run_cwd, "model_candidates"), exist_ok=True)
     # copy files to input directory
     files = os.listdir(os.path.join(data_dir, task_name))
     for file in files:
         if os.path.isdir(os.path.join(data_dir, task_name, file)):
             shutil.copytree(
                 os.path.join(data_dir, task_name, file),
-                os.path.join(workspace_dir, task_name, task_id, "input", file),
+                os.path.join(run_cwd, "input", file),
             )
         else:
             if "answer" not in file:
                 common_util.copy_file(
                     os.path.join(data_dir, task_name, file),
-                    os.path.join(workspace_dir, task_name, task_id, "input"),
+                    os.path.join(run_cwd, "input"),
                 )
     return None
 

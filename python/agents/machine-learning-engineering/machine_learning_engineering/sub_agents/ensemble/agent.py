@@ -1,9 +1,8 @@
 """Ensemble agent for Machine Learning Engineering."""
 
-from typing import Optional
+from typing import Optional, List, Dict, Any
+import json
 import os
-import shutil
-import numpy as np
 
 from google.adk import agents
 from google.adk.agents import callback_context as callback_context_module
@@ -12,241 +11,213 @@ from google.adk.models import llm_request as llm_request_module
 from google.genai import types
 
 from machine_learning_engineering.sub_agents.ensemble import prompt
-from machine_learning_engineering.shared_libraries import debug_util
 from machine_learning_engineering.shared_libraries import common_util
 from machine_learning_engineering.shared_libraries import config
+from machine_learning_engineering.shared_libraries import debug_util
 
 
-def update_ensemble_loop_states(
-    callback_context: callback_context_module.CallbackContext
-) -> Optional[types.Content]:
-    """Updates ensemble loop states."""
-    callback_context.state["ensemble_iter"] += 1
-    return None
-
-
-def init_ensemble_loop_states(
-    callback_context: callback_context_module.CallbackContext
-) -> Optional[types.Content]:
-    """Initializes ensemble loop states."""
-    callback_context.state["ensemble_iter"] = 0
-    return None
-
-
-def get_init_ensemble_plan(
-    callback_context: callback_context_module.CallbackContext,
-    llm_response: llm_response_module.LlmResponse,
-) -> Optional[llm_response_module.LlmResponse]:
-    """Gets the initial plan to ensemble solutions."""
-    response_text = common_util.get_text_from_response(llm_response)
-    callback_context.state["ensemble_plans"] = [response_text]
-    return None
-
-
-def check_ensemble_plan_implement_finish(
-    callback_context: callback_context_module.CallbackContext,
-    llm_request: llm_request_module.LlmRequest,
-) -> Optional[llm_response_module.LlmResponse]:
-    """Checks if the ensemble plan implement is finished."""
-    ensemble_iter = callback_context.state.get("ensemble_iter", 0)
-    result_dict = callback_context.state.get(
-        f"ensemble_code_exec_result_{ensemble_iter}", {}
-    )
-    callback_context.state[
-        f"ensemble_plan_implement_skip_data_leakage_check_{ensemble_iter}"
-    ] = True
-    if result_dict:
-        return llm_response_module.LlmResponse()
-    callback_context.state[
-        f"ensemble_plan_implement_skip_data_leakage_check_{ensemble_iter}"
-    ] = False
-    return None
-
-
-def get_refined_ensemble_plan(
-    callback_context: callback_context_module.CallbackContext,
-    llm_response: llm_response_module.LlmResponse,
-) -> Optional[llm_response_module.LlmResponse]:
-    """Gets the refined ensemble plan from the response."""
-    response_text = common_util.get_text_from_response(llm_response)
-    callback_context.state["ensemble_plans"].append(response_text)
-    return None
-
-
-def get_init_ensemble_plan_agent_instruction(
+def get_ensemble_instruction(
     context: callback_context_module.ReadonlyContext,
 ) -> str:
-    """Gets the initial ensemble plan agent instruction."""
-    num_solutions = context.state.get("num_solutions", 2)
-    outer_loop_round = context.state.get("outer_loop_round", 2)
-    python_solutions = []
-    for task_id in range(1, num_solutions + 1):
-        code = context.state.get(
-            f"train_code_{outer_loop_round}_{task_id}", ""
-        )
-        formatted_str = f"# Python Solution {task_id}\n```python\n{code}\n```\n"
-        python_solutions.append(formatted_str)
-    instruction = prompt.INIT_ENSEMBLE_PLAN_INSTR.format(
-        num_solutions=num_solutions,
-        python_solutions="\n".join(python_solutions),
-    )
-    return instruction
+    """Gets the ensemble agent instruction."""
+    solution1_code = context.state.get("train_code_1_1", "")
+    solution1_score = context.state.get("train_code_exec_result_1_1", {}).get("score", "N/A")
+    solution2_code = context.state.get("train_code_1_2", "")
+    solution2_score = context.state.get("train_code_exec_result_1_2", {}).get("score", "N/A")
 
+    # --- FIX: Dynamically build strategic guidance string ---
+    enhancer_output = context.state.get("enhancer_output", {})
+    strategic_goals = enhancer_output.get("strategic_goals", [])
 
-def get_ensemble_plan_refinement_instruction(
-    context: callback_context_module.ReadonlyContext,
-) -> str:
-    """Gets ensemble plan refinement instruction."""
-    num_solutions = context.state.get("num_solutions", 2)
-    outer_loop_round = context.state.get("outer_loop_round", 2)
-    num_top_plans = context.state.get("num_top_plans", 3)
-    lower = context.state.get("lower", True)
-    prev_plans = context.state.get("ensemble_plans", [])
-    prev_scores = []
-    for k in range(len(prev_plans)):
-        exec_result = context.state.get(
-            f"ensemble_code_exec_result_{k}", {}
-        )
-        prev_scores.append(exec_result["score"])
-    sorted_idx = np.argsort(prev_scores)[::-1]
-    if lower:
-        sorted_idx = sorted_idx[-num_top_plans:]
-        criteria = "lower"
+    ensemble_goals = [
+        g for g in strategic_goals if g.get("target_agent_phase") == "ensemble"
+    ]
+
+    if ensemble_goals:
+        # Use the highest priority goal if multiple exist
+        primary_goal = sorted(ensemble_goals, key=lambda x: x.get("priority", 99))[0]
+        ensemble_focus = primary_goal.get("focus", "default ensembling")
+        ensemble_rationale = primary_goal.get("rationale", "No rationale provided.")
     else:
-        sorted_idx = sorted_idx[:num_top_plans]
-        criteria = "higher"
-    prev_plans_and_scores = ""
-    for k in sorted_idx:
-        prev_plans_and_scores += f"## Plan: {prev_plans[k]}\n"
-        prev_plans_and_scores += f"## Score: {prev_scores[k]:.5f}\n\n"
-    python_solutions = []
-    for task_id in range(1, num_solutions + 1):
-        code = context.state.get(
-            f"train_code_{outer_loop_round}_{task_id}", ""
-        )
-        formatted_str = f"# Python Solution {task_id}\n```python\n{code}\n```\n"
-        python_solutions.append(formatted_str)
-    return prompt.ENSEMBLE_PLAN_REFINE_INSTR.format(
-        num_solutions=num_solutions,
-        python_solutions="\n".join(python_solutions),
-        prev_plans_and_scores=prev_plans_and_scores,
-        criteria=criteria,
+        ensemble_focus = "simple averaging"
+        ensemble_rationale = "No specific strategic goal was provided. Start with a simple and robust averaging ensemble."
+    # --- END FIX ---
+    
+    return prompt.ENSEMBLE_PLANNING_INSTR.format(
+        solution1_code=solution1_code,
+        solution1_score=solution1_score,
+        solution2_code=solution2_code,
+        solution2_score=solution2_score,
+        ensemble_focus=ensemble_focus,
+        ensemble_rationale=ensemble_rationale,
     )
 
 
-def get_ensemble_plan_implement_agent_instruction(
-    context: callback_context_module.ReadonlyContext,
-) -> str:
-    """Gets the ensemble plan implement agent instruction."""
-    num_solutions = context.state.get("num_solutions", 2)
-    outer_loop_round = context.state.get("outer_loop_round", 2)
-    python_solutions = []
-    for task_id in range(1, num_solutions + 1):
-        code = context.state.get(
-            f"train_code_{outer_loop_round}_{task_id}", ""
-        )
-        formatted_str = f"# Python Solution {task_id}\n```python\n{code}\n```\n"
-        python_solutions.append(formatted_str)
-    prev_plans = context.state.get(f"ensemble_plans", [""])
-    return prompt.ENSEMBLE_PLAN_IMPLEMENT_INSTR.format(
-        num_solutions=num_solutions,
-        python_solutions="\n".join(python_solutions),
-        plan=prev_plans[-1],
-    )
-
-
-def create_workspace(
-    callback_context: callback_context_module.CallbackContext
-) -> Optional[types.Content]:
-    """Creates workspace."""
-    data_dir = callback_context.state.get("data_dir", "")
-    workspace_dir = callback_context.state.get("workspace_dir", "")
-    task_name = callback_context.state.get("task_name", "")
-    run_cwd = os.path.join(workspace_dir, task_name, "ensemble")
-    if os.path.exists(run_cwd):
-      shutil.rmtree(run_cwd)
-    # make required directories
-    os.makedirs(os.path.join(workspace_dir, task_name, "ensemble"), exist_ok=True)
-    os.makedirs(os.path.join(workspace_dir, task_name, "ensemble", "input"), exist_ok=True)
-    os.makedirs(os.path.join(workspace_dir, task_name, "ensemble", "final"), exist_ok=True)
-    # copy files to input directory
-    files = os.listdir(os.path.join(data_dir, task_name))
-    for file in files:
-        if os.path.isdir(os.path.join(data_dir, task_name, file)):
-            shutil.copytree(
-                os.path.join(data_dir, task_name, file),
-                os.path.join(workspace_dir, task_name, "ensemble", "input", file),
-            )
-        else:
-            if "answer" not in file:
-                common_util.copy_file(
-                    os.path.join(data_dir, task_name, file),
-                    os.path.join(workspace_dir, task_name, "ensemble", "input"),
-                )
+def parse_and_store_ensemble_plan(
+    callback_context: callback_context_module.CallbackContext,
+    llm_response: llm_response_module.LlmResponse,
+) -> Optional[llm_response_module.LlmResponse]:
+    """Parses the Planner's JSON output and stores it in the state."""
+    response_text = common_util.get_text_from_response(llm_response)
+    try:
+        json_start = response_text.find('[')
+        json_end = response_text.rfind(']') + 1
+        json_str = response_text[json_start:json_end]
+        plan: List[Dict[str, Any]] = json.loads(json_str)
+        if not isinstance(plan, list) or not all("plan_step_description" in p for p in plan):
+            raise ValueError("Plan is not a valid list of steps.")
+        callback_context.state["ensemble_plan"] = plan
+        callback_context.state["ensemble_plan_step_count"] = len(plan)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"ERROR: Could not parse ensemble plan. Error: {e}")
+        callback_context.state["ensemble_plan"] = []
+        callback_context.state["ensemble_plan_step_count"] = 0
     return None
 
 
-init_ensemble_plan_agent = agents.Agent(
+def load_ensemble_plan_step(
+    callback_context: callback_context_module.CallbackContext,
+    llm_request: llm_request_module.LlmRequest
+) -> Optional[llm_response_module.LlmResponse]:
+    """Loads the current step of the ensemble plan into the context."""
+    plan = callback_context.state.get("ensemble_plan", [])
+    step_idx = callback_context.state.get("ensemble_iter", 0)
+
+    if step_idx >= len(plan):
+        return llm_response_module.LlmResponse()
+
+    current_step = plan[step_idx]
+    
+    # In the first iteration, the code to refine is the entire previous solution.
+    # In subsequent iterations, it's the output of the previous implementation step.
+    if step_idx == 0:
+        # For the first step, we might not need a "code to refine" as it builds from scratch.
+        # We'll pass the first solution's code as a baseline reference.
+        code_to_refine = callback_context.state.get("train_code_1_1", "")
+    else:
+        code_to_refine = callback_context.state.get(f"ensemble_code_{step_idx - 1}", "")
+
+    callback_context.state["current_ensemble_plan_step"] = current_step.get("plan_step_description", "")
+    callback_context.state["current_ensemble_code_to_implement"] = current_step.get("code_block_to_implement", "")
+    return None
+
+
+def get_ensemble_implement_instruction(context: callback_context_module.ReadonlyContext) -> str:
+    """Gets instruction for implementing a single step of the ensemble plan."""
+    # This function is now simpler as the logic is in the plan itself.
+    # The agent just needs to combine the code blocks.
+    plan = context.state.get("ensemble_plan", [])
+    step_idx = context.state.get("ensemble_iter", 0)
+    
+    # Concatenate all code blocks up to the current step
+    full_code = ""
+    for i in range(step_idx + 1):
+        if i < len(plan):
+            full_code += f"# --- Plan Step {i+1}: {plan[i].get('plan_step_description', '')} ---\n"
+            full_code += plan[i].get("code_block_to_implement", "")
+            full_code += "\n\n"
+            
+    return f"""
+# Your Task
+You are an expert programmer. You have been given a multi-step plan to create an ensemble solution. Your task is to provide the complete, runnable Python script by combining all the code blocks from the plan up to the current step.
+
+# Full Plan
+{json.dumps(plan, indent=2)}
+
+# Current Step
+{step_idx + 1}
+
+# Instructions
+Combine all `code_block_to_implement` values from the beginning of the plan up to and including the current step into a single, cohesive, and runnable Python script. Ensure the final script is complete and syntactically correct.
+
+# Required Output Format
+You must provide your response as a single Python code block.
+"""
+
+
+def advance_ensemble_iterator(
+    callback_context: callback_context_module.CallbackContext
+) -> Optional[llm_response_module.LlmResponse]:
+    """Advances the ensemble iteration counter."""
+    ensemble_iter = callback_context.state.get("ensemble_iter", 0)
+    callback_context.state["ensemble_iter"] = ensemble_iter + 1
+    return None
+
+
+def ensure_ensemble_iterator_initialized(
+    callback_context: callback_context_module.CallbackContext,
+) -> Optional[types.Content]:
+    """Ensures the ensemble iterator exists before executing the loop."""
+    if callback_context.state.get("ensemble_iter") is None:
+        callback_context.state["ensemble_iter"] = 0
+    return None
+
+
+def create_ensemble_workspace(
+    callback_context: callback_context_module.CallbackContext,
+) -> Optional[types.Content]:
+    """Creates the ensemble workspace directory."""
+    workspace_dir = callback_context.state.get("workspace_dir", "")
+    ensemble_dir = os.path.join(workspace_dir, "ensemble")
+    
+    # Create ensemble directory and subdirectories
+    os.makedirs(ensemble_dir, exist_ok=True)
+    os.makedirs(os.path.join(ensemble_dir, "input"), exist_ok=True)
+    os.makedirs(os.path.join(ensemble_dir, "final"), exist_ok=True)
+    
+    # Copy input data from one of the task directories (use task 1 as source)
+    task_1_input = os.path.join(workspace_dir, "1", "input")
+    if os.path.exists(task_1_input):
+        import shutil
+        for item in os.listdir(task_1_input):
+            src = os.path.join(task_1_input, item)
+            dst = os.path.join(ensemble_dir, "input", item)
+            if os.path.isdir(src):
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+    
+    return None
+
+
+# --- Agent Definitions ---
+
+# Planner Agent to create the ensemble strategy
+ensemble_planner_agent = agents.Agent(
+    name="ensemble_planner",
+    description="Creates a step-by-step plan to ensemble two solutions.",
     model=config.CONFIG.agent_model,
-    name="init_ensemble_plan_agent",
-    description="Generate an initial plan to ensemble solutions.",
-    instruction=get_init_ensemble_plan_agent_instruction,
-    before_agent_callback=init_ensemble_loop_states,
-    after_model_callback=get_init_ensemble_plan,
-    generate_content_config=types.GenerateContentConfig(
-        temperature=1.0,
-    ),
+    instruction=get_ensemble_instruction,
+    after_model_callback=parse_and_store_ensemble_plan,
+    generate_content_config=types.GenerateContentConfig(temperature=0.0),
     include_contents="none",
 )
-init_ensemble_plan_implement_agent = debug_util.get_run_and_debug_agent(
-    prefix="ensemble_plan_implement_initial",
-    suffix="",
-    agent_description="Implement the initial plan to ensemble solutions.",
-    instruction_func=get_ensemble_plan_implement_agent_instruction,
-    before_model_callback=check_ensemble_plan_implement_finish,
-)
-ensemble_plan_refine_agent = agents.Agent(
-    model=config.CONFIG.agent_model,
-    name="ensemble_plan_refine_agent",
-    description="Refine the ensemble plan.",
-    instruction=get_ensemble_plan_refinement_instruction,
-    after_model_callback=get_refined_ensemble_plan,
-    generate_content_config=types.GenerateContentConfig(
-        temperature=1.0,
-    ),
-    include_contents="none",
-)
-ensemble_plan_implement_agent = debug_util.get_run_and_debug_agent(
+
+# Implementer Agent (wrapped in a debug loop)
+ensemble_implement_agent = debug_util.get_run_and_debug_agent(
     prefix="ensemble_plan_implement",
     suffix="",
-    agent_description="Implement the plan to ensemble solutions.",
-    instruction_func=get_ensemble_plan_implement_agent_instruction,
-    before_model_callback=check_ensemble_plan_implement_finish,
+    agent_description="Implements one step of the ensemble plan.",
+    instruction_func=get_ensemble_implement_instruction,
+    before_model_callback=load_ensemble_plan_step,
 )
-ensemble_plan_refine_and_implement_agent = agents.SequentialAgent(
-    name="ensemble_plan_refine_and_implement_agent",
-    description="Refine the ensemble plan and then implement it.",
-    sub_agents=[
-        ensemble_plan_refine_agent,
-        ensemble_plan_implement_agent,
-    ],
-    after_agent_callback=update_ensemble_loop_states,
-)
-ensemble_plan_refine_and_implement_loop_agent = agents.LoopAgent(
-    name="ensemble_plan_refine_and_implement_loop_agent",
-    description="Iteratively refine the ensemble plan and implement it.",
-    sub_agents=[ensemble_plan_refine_and_implement_agent],
-    before_agent_callback=update_ensemble_loop_states,
+
+# Loop to execute all steps of the plan
+ensemble_execution_loop = agents.LoopAgent(
+    name="ensemble_execution_loop",
+    description="Executes each step of the ensemble plan sequentially.",
+    sub_agents=[ensemble_implement_agent],
+    before_agent_callback=ensure_ensemble_iterator_initialized,
+    after_agent_callback=advance_ensemble_iterator,
     max_iterations=config.CONFIG.ensemble_loop_round,
 )
+
+# Main Sequential Agent for the Ensemble Phase
 ensemble_agent = agents.SequentialAgent(
     name="ensemble_agent",
-    description="Ensemble multiple solutions.",
-    sub_agents=[
-        init_ensemble_plan_agent,
-        init_ensemble_plan_implement_agent,
-        ensemble_plan_refine_and_implement_loop_agent,
-    ],
-    before_agent_callback=create_workspace,
-    after_agent_callback=None,
+    description="Generates and executes a plan to create a final ensemble solution.",
+    sub_agents=[ensemble_planner_agent, ensemble_execution_loop],
+    before_agent_callback=create_ensemble_workspace,
 )

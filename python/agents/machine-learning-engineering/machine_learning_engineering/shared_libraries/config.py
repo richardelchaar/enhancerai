@@ -24,9 +24,9 @@ class DefaultConfig:
     # The Enhancer agent will dynamically override them in subsequent runs.
     num_solutions: int = 2
     num_model_candidates: int = 2
-    max_retry: int = 10
-    max_debug_round: int = 5
-    max_rollback_round: int = 2
+    max_retry: int = 2  # Reduced to prevent token explosion
+    max_debug_round: int = 1  # Reduced to prevent token explosion  
+    max_rollback_round: int = 1  # Reduced to prevent token explosion
     inner_loop_round: int = 1  # Changed from higher value to 1 for faster baseline
     outer_loop_round: int = 1  # Changed from higher value to 1 for faster baseline
     ensemble_loop_round: int = 1 # Changed from higher value to 1 for faster baseline

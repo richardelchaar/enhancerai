@@ -1,0 +1,32 @@
+## Model name
+CatBoost
+
+## Example Python code
+from catboost import CatBoostRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import numpy as np
+from sklearn.datasets import make_regression
+
+# Generate synthetic data similar to 'median_house_value' prediction
+X, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42, target_ صدای=10.0)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Initialize CatBoost Regressor with RMSE as the loss function
+# CatBoost natively supports 'RMSE' as a loss function for regression tasks.
+model = CatBoostRegressor(loss_function='RMSE', random_seed=42, verbose=0,  # verbose=0 to suppress training output
+                         iterations=100,  # Number of boosting iterations
+                         learning_rate=0.1 # Step size shrinkage
+                         )
+
+# Train the model
+model.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Calculate Root Mean Squared Error
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+print(f"CatBoost RMSE: {rmse:.4f}")

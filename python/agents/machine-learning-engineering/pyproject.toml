@@ -16,13 +16,22 @@ google-cloud-aiplatform = { version = "^1.93", extras = [
     "adk",
     "agent-engines",
 ] }
+torch = "2.3.1"
+
+
+
+
+
 numpy = "^2.2.3"
 pandas = "^2.3.1"
 scikit-learn = "^1.7.1"
+# --- ADD: prevent aiohttp version conflicts with transitive deps ---
+aiohttp = "^3.9.0"
 # The CPU version of PyTorch is installed here. Change this is you need GPUs, or
 # want to use PyTorch on a different hardware architecture or CPU.
 # (https://download.pytorch.org/whl)
-torch = {version = "^2.7.1", source = "pytorch_cpu"}
+# Pin to a stable PyPI wheel to avoid CPU-index resolution issues
+
 [tool.poetry.group.dev]
 optional = true
 
@@ -39,10 +48,12 @@ pytest-asyncio = "^0.26.0"
 numpy = "^2.2.3"
 pandas = "^2.3.1"
 scikit-learn = "^1.7.1"
+# --- ADD: mirror aiohttp in dev group ---
+aiohttp = "^3.9.0"
 # The CPU version of PyTorch is installed here. Change this is you need GPUs, or
 # want to use PyTorch on a different hardware architecture or CPU.
 # (https://download.pytorch.org/whl)
-torch = {version = "^2.7.1", source = "pytorch_cpu"}
+torch = "2.3.1"
 
 [tool.poetry.group.deployment]
 optional = true
@@ -53,10 +64,7 @@ absl-py = "^2.2.1"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
-[[tool.poetry.source]]
-name = "pytorch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
+# Removed custom PyTorch source to prefer official PyPI wheels
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

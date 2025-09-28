@@ -1,0 +1,4 @@
+longitude,latitude,housing_median_age,total_rooms,total_bedrooms,population,households,median_income
+-121.68,37.93,44.0,1014.0,225.0,704.0,238.0,1.6554
+-117.28,34.26,18.0,3895.0,,1086.0,375.0,3.3672
+-122.1,37.61,35.0,2361.0,458.0,1727.0,467.0,4.5281

@@ -47,6 +47,7 @@ MODEL_EVAL_INSTR = """# Introduction
 - Use PyTorch rather than TensorFlow. Use CUDA if you need. All the necessary libraries are installed.
 - The code should implement the proposed solution and print the value of the evaluation metric computed on a hold-out validation set.
 - Only use the provided train data in the `./input` directory.
+- IMPORTANT: Suppress all verbose model output (use verbose=0, silent=True, etc.) to prevent excessive logging.
 
 # Required
 - There should be no additional headings or text in your response.

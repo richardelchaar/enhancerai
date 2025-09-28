@@ -15,6 +15,18 @@ class Result:
         self.stderr = stderr
 
 
+def truncate_output(text: str, max_length: int = 5000) -> str:
+    """Truncate output to prevent token explosion from verbose model training."""
+    if len(text) <= max_length:
+        return text
+    
+    # Keep the beginning and end, truncate the middle
+    keep_start = max_length // 3
+    keep_end = max_length // 3
+    truncated = text[:keep_start] + f"\n\n... [TRUNCATED {len(text) - max_length} characters to prevent token explosion] ...\n\n" + text[-keep_end:]
+    return truncated
+
+
 def run_python_code(
     code_text: str,
     run_cwd: str,
@@ -23,8 +35,29 @@ def run_python_code(
 ) -> dict[str, Any]:
     start_time = time.time()
     output_filepath = os.path.join(run_cwd, py_filepath)
+    
+    # Add code to suppress verbose model output
+    suppression_code = """
+# Suppress verbose model output to prevent token explosion
+import warnings
+warnings.filterwarnings('ignore')
+import os
+os.environ['PYTHONWARNINGS'] = 'ignore'
+# Suppress LightGBM verbosity
+os.environ['LIGHTGBM_VERBOSITY'] = '-1'
+# Suppress XGBoost verbosity  
+os.environ['XGBOOST_VERBOSITY'] = '0'
+# Suppress sklearn warnings
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
+warnings.filterwarnings('ignore', category=ConvergenceWarning)
+
+"""
+    
+    enhanced_code = suppression_code + code_text
+    
     with open(output_filepath, "w", encoding="utf-8") as f:
-        f.write(code_text)
+        f.write(enhanced_code)
     try:
         result = subprocess.run(
             ["python", py_filepath],
@@ -32,15 +65,21 @@ def run_python_code(
             capture_output=True,
             text=True,
             timeout=exec_timeout,
+            env={**os.environ, 'PYTHONWARNINGS': 'ignore', 'LIGHTGBM_VERBOSITY': '-1', 'XGBOOST_VERBOSITY': '0'}
         )
     except Exception as e:
         result = Result(returncode=1, stdout="", stderr=str(e))
     end_time = time.time()
     execution_time = end_time - start_time
+    
+    # Truncate outputs to prevent token explosion
+    truncated_stdout = truncate_output(result.stdout)
+    truncated_stderr = truncate_output(result.stderr)
+    
     result_dict = {
         "returncode": result.returncode,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stdout": truncated_stdout,
+        "stderr": truncated_stderr,
         "execution_time": execution_time,
     }
     return result_dict

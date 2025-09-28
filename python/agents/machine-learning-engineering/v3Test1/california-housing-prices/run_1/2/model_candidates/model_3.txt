@@ -1,0 +1,28 @@
+## Model name
+CatBoost Regressor
+
+## Example Python code
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from catboost import CatBoostRegressor
+
+# --- 1. Generate dummy data for demonstration ---
+X = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])
+y = pd.Series(np.random.rand(1000) * 100000 + 50000)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# --- 2. Initialize and Train CatBoost Regressor ---
+# loss_function='RMSE' directly optimizes for Root Mean Squared Error.
+# CatBoost handles categorical features automatically if specified via 'cat_features' parameter.
+model = CatBoostRegressor(loss_function='RMSE', random_seed=42, verbose=0) # verbose=0 to suppress output during training
+model.fit(X_train, y_train)
+
+# --- 3. Make Predictions ---
+y_pred = model.predict(X_test)
+
+# --- 4. Evaluate the Model (RMSE) ---
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+print(f"CatBoost RMSE: {rmse:.4f}")

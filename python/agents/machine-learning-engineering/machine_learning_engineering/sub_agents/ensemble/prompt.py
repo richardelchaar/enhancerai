@@ -1,65 +1,57 @@
-"""Defines the prompts for the ensemble agent."""
+"""Defines prompts for the Ensemble Agent v3.0."""
 
+ENSEMBLE_PLANNING_INSTR = """
+# Persona
+You are a Kaggle Grandmaster specializing in ensembling techniques. Your task is to create a robust and high-performing ensemble from a set of provided machine learning solutions.
 
-INIT_ENSEMBLE_PLAN_INSTR = """# Introduction
-- You are a Kaggle grandmaster attending a competition.
-- We will now provide {num_solutions} Python Solutions used for the competiton.
-- Your task is to propose a plan to ensemble the {num_solutions} solutions to achieve the best performance.
+# Context
+You have been provided with two complete, independent solutions to a tabular regression problem. Each solution is a runnable Python script that produces a 'Final Validation Performance' score (RMSE). Your goal is to create a plan to combine these solutions into a superior ensemble.
 
-{python_solutions}
+**Strategic Guidance from the Research Lead:**
+- **Primary Focus:** `{ensemble_focus}`
+- **Rationale:** `{ensemble_rationale}`
 
-# Your task
-- Suggest a plan to ensemble the {num_solutions} solutions. You should concentrate how to merge, not the other parts like hyperparameters.
-- The suggested plan should be easy to novel, effective, and easy to implement.
-- All the provided data is already prepared and available in the `./input` directory. There is no need to unzip any files.
+**Solution 1 (Initial Code from Parallel Pipeline 1):**
+- **Validation Score (RMSE):** {solution1_score}
+- **Code:**
+```python
+{solution1_code}
+```
 
-# Respone format
-- Your response should be an outline/sketch of your proposed solution in natural language.
-- There should be no additional headings or text in your response.
-- Plan should not modify the original solutions too much since exeuction error can occur."""
+**Solution 2 (Initial Code from Parallel Pipeline 2):**
+- **Validation Score (RMSE):** {solution2_score}
+- **Code:**
+```python
+{solution2_code}
+```
 
-ENSEMBLE_PLAN_IMPLEMENT_INSTR = """# Introduction
-- You are a Kaggle grandmaster attending a competition.
-- In order to win this competition, you need to ensemble {num_solutions} Python Solutions for better performance based on the ensemble plan.
-- We will now provide the Python Solutions and the ensemble plan.
+# Your Task
+Based on your expertise and the Strategic Guidance provided, create a concise, step-by-step plan to ensemble these two solutions. The final step of your plan MUST be to evaluate the ensemble and print the 'Final Validation Performance' score.
 
-{python_solutions}
+# Required Output Format
+You must respond in a single, valid JSON block.
 
-# Ensemble Plan
-{plan}
+The JSON object must be a list of plan steps.
 
-# Your task
-- Implement the ensemble plan with the provided solutions.
-- Unless mentioned in the ensemble plan, do not modify the origianl Python Solutions too much.
-- All the provided data is already prepared and available in the `./input` directory. There is no need to unzip any files.
-- The code should implement the proposed solution and print the value of the evaluation metric computed on a hold-out validation set.
+Each step must have a `plan_step_description` and the `code_block_to_implement`.
 
-# Response format required
-- Your response should be a single markdown code block (wrapped in ```) which is the ensemble of {num_solutions} Python Solutions.
-- There should be no additional headings or text in your response.
-- Do not modify original Python Solutions especially the submission part due to formatting issue of submission.csv.
-- Do not subsample or introduce dummy variables. You have to provide full new Python Solution using the {num_solutions} provided solutions.
-- Print out or return a final performance metric in your answer in a clear format with the exact words: 'Final Validation Performance: {{final_validation_score}}'.
-- The code should be a single-file Python program that is self-contained and can be executed as-is.
-- Do not modify the original codes too much and implement the plan since new errors can occur."""
+Crucially, the final step MUST include the code to print the final validation score.
 
-ENSEMBLE_PLAN_REFINE_INSTR = """# Introduction
-- You are a Kaggle grandmaster attending a competition.
-- In order to win this competition, you have to ensemble {num_solutions} Python Solutions for better performance.
-- We will provide the Python Solutions and the ensemble plans you have tried.
-
-{python_solutions}
-
-# Ensemble plans you have tried
-
-{prev_plans_and_scores}
-
-# Your task
-- Suggest a better plan to ensemble the {num_solutions} solutions. You should concentrate how to merge, not the other parts like hyperparameters.
-- The suggested plan must be easy to implement, novel, and effective.
-- The suggested plan should be differ from the previous plans you have tried and should receive a {criteria} score.
-
-# Response format
-- Your response should be an outline/sketch of your proposed solution in natural language.
-- There should be no additional headings or text in your response.
-- Plan should not modify the original solutions too much since exeuction error can occur."""
+# Example Output
+```json
+[
+  {{
+    "plan_step_description": "1. Consolidate Data Preparation: Create a unified data loading and preprocessing pipeline based on the best practices from both solutions.",
+    "code_block_to_implement": "..."
+  }},
+  {{
+    "plan_step_description": "2. Train Base Models: Independently train the LightGBM model from Solution 1 and the XGBoost model from Solution 2 on the unified training data.",
+    "code_block_to_implement": "..."
+  }},
+  {{
+    "plan_step_description": "3. Ensemble Predictions & Final Evaluation: Combine the predictions from the base models using the specified stacking strategy and evaluate the final RMSE.",
+    "code_block_to_implement": "..."
+  }}
+]
+```
+"""

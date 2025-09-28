@@ -1,0 +1,3 @@
+I have provided two effective models (LightGBM and XGBoost) along with their concise example codes for the specified tabular regression task, predicting `median_house_value` using the `root_mean_squared_error` metric.
+
+Since no further instructions or outputs are needed based on the initial request, I have completed the task.
