@@ -10,6 +10,8 @@ from google.adk.models import llm_request as llm_request_module
 from google.genai import types
 from google.adk.tools.google_search_tool import google_search
 
+import re
+
 from machine_learning_engineering.shared_libraries import debug_prompt
 from machine_learning_engineering.shared_libraries import code_util
 from machine_learning_engineering.shared_libraries import common_util
@@ -90,8 +92,25 @@ def check_bug_existence(
         suffix=suffix,
     )
     result_dict = callback_context.state.get(code_execution_result_state_key, {})
+
+    # Skip debug if code passed (returncode=0)
     if result_dict and result_dict.get("returncode", 1) == 0:
         return llm_response_module.LlmResponse()
+
+    validation_errors = result_dict.get("validation_errors", [])
+    skip_codes = {"exit_statement_detected", "strategic_output_missing"}
+    blocking_reasons = [
+        err.get("message", err.get("code", ""))
+        for err in validation_errors
+        if err.get("code") in skip_codes
+    ]
+    if blocking_reasons:
+        reason_text = " | ".join(blocking_reasons)
+        print(
+            f"INFO: Skipping debug for {agent_name} - validation failure requires upstream fix: {reason_text}"
+        )
+        return llm_response_module.LlmResponse()
+
     return None
 
 
@@ -169,7 +188,28 @@ def get_code_from_response(
 ) -> Optional[llm_response_module.LlmResponse]:
     """Gets the code from the response."""
     response_text = common_util.get_text_from_response(llm_response)
-    code = response_text.replace("```python", "").replace("```", "")
+    code_block_matches = re.findall(r"```(?:python)?\s*(.*?)```", response_text, flags=re.DOTALL)
+    if not code_block_matches:
+        print("WARNING: LLM response did not contain a Python code block; skipping state update")
+        return None
+
+    code = code_block_matches[-1].strip()
+
+    # Collapse consecutive duplicate chunks to avoid runaway state growth when
+    # the LLM streams the same block multiple times in one response.
+    cleaned_chunks: list[str] = []
+    previous_chunk: Optional[str] = None
+    for chunk in code.split("\n\n"):
+        chunk_stripped = chunk.strip()
+        if not chunk_stripped:
+            continue
+        if chunk_stripped == previous_chunk:
+            continue
+        cleaned_chunks.append(chunk_stripped)
+        previous_chunk = chunk_stripped
+    if cleaned_chunks:
+        code = "\n\n".join(cleaned_chunks)
+
     agent_name = callback_context.agent_name
     suffix = code_util.get_updated_suffix(callback_context=callback_context)
     code_state_key = code_util.get_code_state_key(
