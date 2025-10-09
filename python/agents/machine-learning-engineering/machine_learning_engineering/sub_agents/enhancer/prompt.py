@@ -19,7 +19,14 @@ If you truly have no historical runs, acknowledge that. Otherwise, you **must** 
 # Your Task
 1. Analyse what happened in the most recent run. Identify successes, failures, bottlenecks, and opportunities. Call out concrete evidence (e.g. scores, timings, model choices) from the supplied artefacts.
 2. Decide how the next run should evolve. Propose configuration overrides only when they are justified by the analysis.
-3. Define strategic goals for the downstream agents (refinement, ensemble, modelling, submission, etc.). Each goal should have a unique priority (1 = highest) so planners can order their work.
+3. Define strategic goals for the downstream agents. Each goal should have a unique priority (1 = highest) so planners can order their work.
+
+# Valid Target Agent Phases
+- **"refinement"**: For feature engineering, hyperparameter tuning, model architecture changes, cross-validation, regularization
+- **"ensemble"**: For model combination strategies (stacking, weighted averaging, blending)
+- **"submission"**: For final prediction generation and submission file creation
+
+**Important:** Use "refinement" for all model optimization tasks including hyperparameter tuning (e.g., RandomizedSearchCV, GridSearchCV, Bayesian optimization).
 
 # Output Requirements
 Respond with **one valid JSON object** matching the schema below. Use actual values – do not leave placeholders.
@@ -39,9 +46,15 @@ Respond with **one valid JSON object** matching the schema below. Use actual val
       "rationale": "Why this is priority #1, referencing observed results."
     }},
     {{
-      "target_agent_phase": "ensemble",
-      "focus": "stacking",
+      "target_agent_phase": "refinement",
+      "focus": "hyperparameter_tuning",
       "priority": 2,
+      "rationale": "Use RandomizedSearchCV or GridSearchCV to optimize model hyperparameters based on ablation insights."
+    }},
+    {{
+      "target_agent_phase": "ensemble",
+      "focus": "weighted_averaging",
+      "priority": 3,
       "rationale": "Justification tied to previous ensemble performance."
     }}
   ]

@@ -1,0 +1,14 @@
+Here are two recent effective models for tabular regression, along with concise and simple example codes, suitable for winning the competition. Both models are gradient boosting decision tree (GBDT) algorithms, which consistently rank among the top performers in tabular data competitions.
+
+```json
+[
+  {
+    "model_name": "LightGBM",
+    "example_code": "import lightgbm as lgb\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.datasets import make_regression\nimport numpy as np\n\n# Generate synthetic data for tabular regression\nX, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42)\n\n# Split data into training and testing sets\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# Initialize LightGBM Regressor model\n# Using default parameters for simplicity, but these can be tuned for better performance\nlgbm = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42)\n\n# Train the model\nlgbm.fit(X_train, y_train)\n\n# Make predictions on the test set\ny_pred_lgbm = lgbm.predict(X_test)\n\n# Calculate Root Mean Squared Error (RMSE)\nrmse_lgbm = np.sqrt(mean_squared_error(y_test, y_pred_lgbm))\n\nprint(f\"LightGBM RMSE: {rmse_lgbm:.4f}\")"
+  },
+  {
+    "model_name": "XGBoost",
+    "example_code": "import xgboost as xgb\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.datasets import make_regression\nimport numpy as np\n\n# Generate synthetic data for tabular regression\nX, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42)\n\n# Split data into training and testing sets\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# Initialize XGBoost Regressor model\n# 'objective' specifies the learning task and the corresponding learning objective.\n# 'reg:squarederror' is for regression with squared error.\n# Using default parameters for simplicity, but these can be tuned for better performance\nxgb = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42)\n\n# Train the model\nxgb.fit(X_train, y_train)\n\n# Make predictions on the test set\ny_pred_xgb = xgb.predict(X_test)\n\n# Calculate Root Mean Squared Error (RMSE)\nrmse_xgb = np.sqrt(mean_squared_error(y_test, y_pred_xgb))\n\nprint(f\"XGBoost RMSE: {rmse_xgb:.4f}\")"
+  }
+]
+```

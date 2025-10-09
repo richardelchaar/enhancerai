@@ -12,7 +12,7 @@ class DefaultConfig:
     task_type: str = "Tabular Regression"
     lower: bool = True
     workspace_dir: str = "./machine_learning_engineering/workspace/"
-    agent_model: str = os.environ.get("ROOT_AGENT_MODEL", "gemini-2.0-flash-001")
+    agent_model: str = os.environ.get("ROOT_AGENT_MODEL", "gemini-2.5-flash")
     task_description: str = ""
     task_summary: str = ""
     start_time: float = 0.0
@@ -24,9 +24,9 @@ class DefaultConfig:
     # The Enhancer agent will dynamically override them in subsequent runs.
     num_solutions: int = 2
     num_model_candidates: int = 2
-    max_retry: int = 2  # Reduced to prevent token explosion
-    max_debug_round: int = 1  # Reduced to prevent token explosion  
-    max_rollback_round: int = 1  # Reduced to prevent token explosion
+    max_retry: int = 6  # Reduced to prevent token explosion
+    max_debug_round: int = 6  # Reduced to prevent token explosion  
+    max_rollback_round: int = 2  # Reduced to prevent token explosion
     inner_loop_round: int = 1  # Changed from higher value to 1 for faster baseline
     outer_loop_round: int = 1  # Changed from higher value to 1 for faster baseline
     ensemble_loop_round: int = 1 # Changed from higher value to 1 for faster baseline

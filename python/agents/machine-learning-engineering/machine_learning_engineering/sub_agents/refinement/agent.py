@@ -68,6 +68,16 @@ def get_plan_generation_instruction(context: callback_context_module.ReadonlyCon
 
     enhancer_goals_str = "\n".join(refinement_goals)
     if not enhancer_goals_str:
+        # Distinguish between missing vs intentionally empty strategic goals
+        enhancer_output = context.state.get("enhancer_output", {})
+        run_id = context.state.get("run_id", 0)
+
+        # Only warn about missing strategic_goals after Run 0 (when Enhancer should have run)
+        if run_id > 0 and "strategic_goals" not in enhancer_output:
+            print(f"WARNING: enhancer_output.strategic_goals is missing entirely for task {context.agent_name.split('_')[-1]} - possible schema mismatch")
+        elif run_id > 0 and not enhancer_output.get("strategic_goals"):
+            print(f"INFO: No strategic goals provided by Enhancer for task {context.agent_name.split('_')[-1]} - using ablation-driven planning")
+
         enhancer_goals_str = "No specific strategic goals provided. Use the ablation summary to find the best area for improvement."
     # --- END FIX ---
     
@@ -124,12 +134,27 @@ def load_plan_step_for_execution(
     plan = callback_context.state.get(f"refinement_plan_{task_id}", [])
     step_idx = callback_context.state.get(f"plan_execution_step_{task_id}", 0)
 
+    # Check if previous step failed before loading next step
+    if step_idx > 0:
+        refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
+        prev_result = callback_context.state.get(
+            f"train_code_improve_exec_result_{step_idx-1}_{refine_step}_{task_id}",
+            {}
+        )
+        if not prev_result or prev_result.get("returncode", -1) != 0:
+            print(f"WARNING: Plan execution halted for task {task_id} - step {step_idx-1} failed or returned no result")
+            return llm_response_module.LlmResponse()  # Skip remaining steps
+
     if step_idx >= len(plan):
         return llm_response_module.LlmResponse() # Skip if plan is finished
 
     current_step = plan[step_idx]
+    refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
     callback_context.state[f"current_plan_step_description_{task_id}"] = current_step.get("plan_step_description", "")
     callback_context.state[f"current_code_block_to_refine_{task_id}"] = current_step.get("code_block_to_refine", "")
+    
+    # FIX: Store the code block with the correct key that debug_util expects
+    callback_context.state[f"refine_code_block_{refine_step}_{task_id}"] = current_step.get("code_block_to_refine", "")
 
     # Help debug_util build the right suffix for eval
     callback_context.state[f"inner_iter_{task_id}"] = step_idx
@@ -142,7 +167,16 @@ def update_plan_execution_step(
     """Increments the counter for which plan step to execute next."""
     task_id = callback_context.agent_name.split("_")[-1]
     step_idx = callback_context.state.get(f"plan_execution_step_{task_id}", 0)
-    callback_context.state[f"plan_execution_step_{task_id}"] = step_idx + 1
+    refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
+
+    # Only increment if current step succeeded
+    result = callback_context.state.get(
+        f"train_code_improve_exec_result_{step_idx}_{refine_step}_{task_id}", {}
+    )
+    if result and result.get("returncode") == 0:
+        callback_context.state[f"plan_execution_step_{task_id}"] = step_idx + 1
+    else:
+        print(f"WARNING: Not advancing to next plan step for task {task_id} - current step {step_idx} failed")
     return None
 
 

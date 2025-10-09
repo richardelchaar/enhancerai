@@ -12,3 +12,4 @@ import aiohttp
 if not hasattr(aiohttp, 'ClientConnectorDNSError'):
     # Create ClientConnectorDNSError as an alias to ClientConnectorError
     aiohttp.ClientConnectorDNSError = aiohttp.ClientConnectorError
+

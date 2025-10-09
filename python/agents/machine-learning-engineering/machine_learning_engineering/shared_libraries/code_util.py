@@ -1,6 +1,6 @@
 """Code related utility functions."""
 
-from typing import Any
+from typing import Any, Optional
 import subprocess
 import os
 import time
@@ -201,26 +201,18 @@ def get_code_execution_result_state_key(
 def get_run_code_condition(
     agent_name: str,
     raw_code: str,
-) -> bool:
-    """Gets the condition for running the code."""
-    if agent_name.startswith("ensemble_plan_implement"):
-        if "debug_agent" not in agent_name:
-            return True
-        if "Final Validation Performance" in raw_code and "exit()" not in raw_code:
-            return True
-    elif agent_name.startswith("ablation"):
-        if "debug_agent" not in agent_name:
-            return True
-        if "exit()" not in raw_code:
-            return True
-    elif agent_name.startswith("submission"):
-        if "debug_agent" not in agent_name and "exit()" not in raw_code and "submission.csv" in raw_code:
-            return True
-        if "debug_agent" in agent_name and "exit()" not in raw_code:
-            return True
-    elif "Final Validation Performance" in raw_code and "exit()" not in raw_code:
-        return True
-    return False
+) -> tuple[bool, Optional[dict[str, str]]]:
+    """Currently the evaluator allows all code to execute."""
+    return True, None
+
+
+def requires_final_validation_output(agent_name: str) -> bool:
+    """Returns True when the agent must print the final validation score."""
+    if agent_name.startswith("ablation"):
+        return False
+    if agent_name.startswith("submission"):
+        return False
+    return True
 
 
 def evaluate_code(
@@ -270,10 +262,15 @@ def evaluate_code(
     else:
         raise ValueError(f"Unexpected agent name: {agent_name}.")
     
-    if get_run_code_condition(
+    should_run, blocking_error = get_run_code_condition(
         agent_name=agent_name,
         raw_code=raw_code,
-    ):
+    )
+    validation_errors: list[dict[str, str]] = []
+    if blocking_error:
+        validation_errors.append(blocking_error)
+
+    if should_run:
         workspace_dir = callback_context.state.get("workspace_dir", "")
         run_cwd = os.path.join(workspace_dir, task_id)
         result_dict = run_python_code(
@@ -299,7 +296,50 @@ def evaluate_code(
                 score = 1e9 if lower else 0
             result_dict["score"] = score
     else:
-        result_dict = {}
+        result_dict = {
+            "error": blocking_error["message"] if blocking_error else "Code validation failed.",
+            "returncode": 1,
+            "stdout": "",
+            "stderr": blocking_error["message"] if blocking_error else "",
+            "execution_time": 0.0,
+            "score": float("inf") if lower else float("-inf")
+        }
+    if should_run and requires_final_validation_output(agent_name):
+        stdout_text = result_dict.get("stdout", "")
+        if "Final Validation Performance" not in stdout_text:
+            validation_errors.append({
+                "code": "missing_final_validation_output",
+                "message": (
+                    'Execution must print "Final Validation Performance: <score>" '
+                    "for the harness to read the metric."
+                ),
+            })
+
+    if validation_errors:
+        combined_message = " | ".join(err["message"] for err in validation_errors)
+        stderr_text = result_dict.get("stderr", "")
+        if stderr_text:
+            if combined_message not in stderr_text:
+                result_dict["stderr"] = f"{stderr_text.rstrip()} | {combined_message}"
+        else:
+            result_dict["stderr"] = combined_message
+
+        error_text = result_dict.get("error", "")
+        if error_text:
+            if combined_message not in error_text:
+                result_dict["error"] = f"{error_text.rstrip()} | {combined_message}"
+        else:
+            result_dict["error"] = combined_message
+
+        result_dict["validation_errors"] = validation_errors
+
+        if result_dict.get("returncode", 0) == 0:
+            result_dict["returncode"] = 1
+
+        if agent_name.startswith("ablation"):
+            result_dict["ablation_result"] = "None"
+        else:
+            result_dict["score"] = 1e9 if lower else 0
     code_execution_result_state_key = get_code_execution_result_state_key(
         agent_name=agent_name,
         suffix=suffix,

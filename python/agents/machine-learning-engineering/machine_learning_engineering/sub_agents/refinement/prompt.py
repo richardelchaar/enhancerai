@@ -17,6 +17,53 @@ You are a machine learning expert. Your task is to perform an ablation study on 
 
 # Required Output Format
 You must provide your response as a single, runnable Python code block.
+
+# IMPORTANT: Code Structure Guidelines
+To avoid indentation errors, use this FLAT structure (do NOT wrap in functions):
+
+```python
+# Imports
+import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_squared_error
+# ... other imports ...
+
+# ===== BASELINE: Original Code =====
+print("Running Baseline...")
+# [PASTE ORIGINAL CODE HERE - UNCHANGED]
+baseline_score = rmse  # or whatever metric variable is used
+print(f"Baseline Performance: {{baseline_score}}")
+
+# ===== ABLATION 1: [Description] =====
+print("\\nRunning Ablation 1: [Description]...")
+# [PASTE ORIGINAL CODE, but comment out or modify the target component]
+ablation_1_score = rmse
+print(f"Ablation 1 Performance: {{ablation_1_score}}")
+
+# ===== ABLATION 2: [Description] =====
+print("\\nRunning Ablation 2: [Description]...")
+# [PASTE ORIGINAL CODE, but comment out or modify the target component]
+ablation_2_score = rmse
+print(f"Ablation 2 Performance: {{ablation_2_score}}")
+
+# ===== SUMMARY =====
+print("\\n===== ABLATION STUDY SUMMARY =====")
+ablations = [
+    ("Baseline", baseline_score),
+    ("Ablation 1", ablation_1_score),
+    ("Ablation 2", ablation_2_score),
+]
+deltas = [(name, abs(score - baseline_score)) for name, score in ablations[1:]]
+most_impactful = max(deltas, key=lambda x: x[1])
+print(f"Most impactful component: {{most_impactful[0]}} (delta: {{most_impactful[1]:.4f}})")
+```
+
+**Key Points:**
+- Use FLAT structure (no nested functions)
+- Copy-paste the original code 3+ times (once per ablation + baseline)
+- Maintain EXACT indentation from the original code when pasting
+- Only comment out or modify the specific line(s) being ablated
+- Store results in simple variables (baseline_score, ablation_1_score, etc.)
 """
 
 ABLATION_SEQ_INSTR = """
@@ -46,6 +93,54 @@ The script MUST include a final summary section that programmatically determines
 
 # Required Output Format
 You must provide your response as a single, runnable Python code block.
+
+# IMPORTANT: Code Structure Guidelines
+To avoid indentation errors, use this FLAT structure (do NOT wrap in functions):
+
+```python
+# Imports
+import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_squared_error
+# ... other imports ...
+
+# ===== BASELINE: Original Code =====
+print("Running Baseline...")
+# [PASTE ORIGINAL CODE HERE - UNCHANGED]
+baseline_score = rmse  # or whatever metric variable is used
+print(f"Baseline Performance: {{baseline_score}}")
+
+# ===== ABLATION 1: [Description of NEW ablation] =====
+print("\\nRunning Ablation 1: [Description]...")
+# [PASTE ORIGINAL CODE, but comment out or modify the NEW target component]
+ablation_1_score = rmse
+print(f"Ablation 1 Performance: {{ablation_1_score}}")
+
+# ===== ABLATION 2: [Description of NEW ablation] =====
+print("\\nRunning Ablation 2: [Description]...")
+# [PASTE ORIGINAL CODE, but comment out or modify the NEW target component]
+ablation_2_score = rmse
+print(f"Ablation 2 Performance: {{ablation_2_score}}")
+
+# ===== SUMMARY =====
+print("\\n===== ABLATION STUDY SUMMARY =====")
+ablations = [
+    ("Baseline", baseline_score),
+    ("Ablation 1", ablation_1_score),
+    ("Ablation 2", ablation_2_score),
+]
+deltas = [(name, abs(score - baseline_score)) for name, score in ablations[1:]]
+most_impactful = max(deltas, key=lambda x: x[1])
+print(f"Most impactful component: {{most_impactful[0]}} (delta: {{most_impactful[1]:.4f}})")
+```
+
+**Key Points:**
+- Use FLAT structure (no nested functions)
+- Copy-paste the original code 3+ times (once per ablation + baseline)
+- Maintain EXACT indentation from the original code when pasting
+- Only comment out or modify the specific line(s) being ablated
+- Test components NOT already tested in previous ablation studies
+- Store results in simple variables (baseline_score, ablation_1_score, etc.)
 """
 
 SUMMARIZE_ABLATION_INSTR = """
@@ -93,6 +188,13 @@ You have been given the results of an ablation study and a high-level strategic 
 2. **Plan:** Create a step-by-step plan to refine the code. Your plan should consist of 1 to 3 distinct steps. Each step should be a logical, incremental improvement.
 3. **Identify Code:** For each step in your plan, you MUST identify the specific, contiguous block of code from the "Current Code" that needs to be modified.
 
+# Valid Refinement Focus Areas
+- **Feature Engineering**: Create/transform features, interaction terms, polynomial features
+- **Hyperparameter Tuning**: Use RandomizedSearchCV, GridSearchCV, or Bayesian optimization to tune model parameters
+- **Model Architecture**: Change model structure, add/remove layers, switch algorithms
+- **Cross-Validation**: Implement k-fold, stratified k-fold, or time-series cross-validation
+- **Regularization**: Add L1/L2 penalties, dropout, early stopping, or other regularization techniques
+
 # Required Output Format
 You must respond in a single, valid JSON block.
 
@@ -102,16 +204,38 @@ Each step must have two keys:
 - `plan_step_description`: A concise description of the change you will make.
 - `code_block_to_refine`: The exact, verbatim code block from the "Current Code" that will be modified for this step.
 
-# Example
+# Examples
+
+**Example 1: Feature Engineering**
 ```json
 [
   {{
     "plan_step_description": "1. Feature Engineering: Create interaction features between 'total_rooms' and 'population' to better capture density.",
     "code_block_to_refine": "X['total_bedrooms'].fillna(median_total_bedrooms, inplace=True)"
+  }}
+]
+```
+
+**Example 2: Hyperparameter Tuning with RandomizedSearchCV**
+```json
+[
+  {{
+    "plan_step_description": "1. Hyperparameter Tuning: Use RandomizedSearchCV to optimize n_estimators, max_depth, learning_rate, and num_leaves for LightGBM based on ablation insights.",
+    "code_block_to_refine": "model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, verbose=-1)"
+  }}
+]
+```
+
+**Example 3: Multi-step Plan**
+```json
+[
+  {{
+    "plan_step_description": "1. Feature Engineering: Add polynomial features and interaction terms.",
+    "code_block_to_refine": "X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)"
   }},
   {{
-    "plan_step_description": "2. Hyperparameter Tuning: Tune the 'n_estimators' and 'learning_rate' of the LightGBM model.",
-    "code_block_to_refine": "model = lgb.LGBMRegressor(objective='regression_l1', metric='rmse', random_state=42, n_estimators=1000)"
+    "plan_step_description": "2. Hyperparameter Tuning: GridSearchCV on top 3 hyperparameters identified by ablation.",
+    "code_block_to_refine": "model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42)"
   }}
 ]
 ```

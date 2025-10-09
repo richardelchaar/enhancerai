@@ -1,0 +1,19 @@
+Here are two recent and effective models for tabular regression problems, along with concise example code:
+
+```json
+[
+  {
+    "model_name": "LightGBM Regressor",
+    "example_code": "import lightgbm as lgb\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.datasets import make_regression\nimport numpy as np\n\n# 1. Generate synthetic tabular data\nX, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42)\n\n# 2. Split data into training and testing sets\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# 3. Initialize LightGBM Regressor model\n# Using default parameters for simplicity, but these can be tuned\nmodel = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42)\n\n# 4. Train the model\nmodel.fit(X_train, y_train)\n\n# 5. Make predictions on the test set\ny_pred = model.predict(X_test)\n\n# 6. Evaluate the model using Root Mean Squared Error (RMSE)\nrmse = np.sqrt(mean_squared_error(y_test, y_pred))\nprint(f\"LightGBM RMSE: {rmse:.4f}\")"
+  },
+  {
+    "model_name": "CatBoost Regressor",
+    "example_code": "from catboost import CatBoostRegressor\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.datasets import make_regression\nimport numpy as np\n\n# 1. Generate synthetic tabular data\nX, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42)\n\n# 2. Split data into training and testing sets\nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n\n# 3. Initialize CatBoost Regressor model\n# 'RMSE' is the default loss function for regression in CatBoost\nmodel = CatBoostRegressor(iterations=100,  # Number of boosting iterations (trees)\n                          learning_rate=0.1, # Step size shrinkage\n                          depth=6,         # Depth of trees\n                          loss_function='RMSE', # Loss function to optimize\n                          random_seed=42,    # For reproducibility\n                          verbose=False)     # Suppress training output for conciseness\n\n# 4. Train the model\nmodel.fit(X_train, y_train)\n\n# 5. Make predictions on the test set\ny_pred = model.predict(X_test)\n\n# 6. Evaluate the model using Root Mean Squared Error (RMSE)\nrmse = np.sqrt(mean_squared_error(y_test, y_pred))\nprint(f\"CatBoost RMSE: {rmse:.4f}\")"
+  }
+]
+```
+These models are popular choices for tabular regression tasks due to their high performance and efficiency.
+
+1.  **LightGBM Regressor**: LightGBM (Light Gradient Boosting Machine) is a gradient boosting framework that uses tree-based learning algorithms. It is designed to be highly efficient and scalable, especially for large datasets. It is known for its speed and accuracy, often outperforming other boosting frameworks. The provided code demonstrates how to initialize `LGBMRegressor`, train it on a synthetic dataset, and evaluate its performance using RMSE.
+
+2.  **CatBoost Regressor**: CatBoost (Categorical Boosting) is another powerful gradient boosting library developed by Yandex. Its key strengths include its ability to handle categorical features automatically without explicit preprocessing (like one-hot encoding), robustness to overfitting, and competitive accuracy. The example code shows how to use `CatBoostRegressor` with 'RMSE' as the loss function, train it, and then calculate the RMSE on predictions.

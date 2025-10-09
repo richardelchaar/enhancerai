@@ -1,0 +1,32 @@
+## Model name
+XGBoost
+
+## Example Python code
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from sklearn.datasets import make_regression
+import numpy as np
+
+# Generate synthetic data for tabular regression
+X, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Initialize XGBoost Regressor model
+# 'objective' specifies the learning task and the corresponding learning objective.
+# 'reg:squarederror' is for regression with squared error.
+# Using default parameters for simplicity, but these can be tuned for better performance
+xgb = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42)
+
+# Train the model
+xgb.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred_xgb = xgb.predict(X_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_xgb = np.sqrt(mean_squared_error(y_test, y_pred_xgb))
+
+print(f"XGBoost RMSE: {rmse_xgb:.4f}")

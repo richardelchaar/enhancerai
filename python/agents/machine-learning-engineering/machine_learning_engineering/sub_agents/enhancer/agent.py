@@ -73,7 +73,26 @@ def parse_enhancer_output(
         required_keys = ["strategic_summary", "config_overrides", "strategic_goals"]
         if not all(key in enhancer_output for key in required_keys):
             raise ValueError(f"Enhancer output missing required keys: {required_keys}")
-            
+
+        # Validate and filter strategic goals by target_agent_phase
+        VALID_PHASES = {"refinement", "ensemble", "submission"}
+        strategic_goals = enhancer_output.get("strategic_goals", [])
+        validated_goals = []
+
+        for goal in strategic_goals:
+            phase = goal.get("target_agent_phase", "")
+
+            # Map deprecated "modelling" to "refinement" with warning
+            if phase == "modelling":
+                print(f"WARNING: Deprecated phase 'modelling' mapped to 'refinement' for goal: {goal.get('focus')}")
+                goal["target_agent_phase"] = "refinement"
+                validated_goals.append(goal)
+            elif phase in VALID_PHASES:
+                validated_goals.append(goal)
+            else:
+                print(f"ERROR: Invalid target_agent_phase '{phase}' - goal ignored: {goal.get('focus')}")
+
+        enhancer_output["strategic_goals"] = validated_goals
         callback_context.state["enhancer_output"] = enhancer_output
 
     except (json.JSONDecodeError, ValueError) as e:

@@ -230,7 +230,22 @@ def get_code_from_response(
             step = callback_context.state.get(f"refine_step_{task_id}", 0)
             code_block = callback_context.state.get(f"refine_code_block_{step}_{task_id}", "")
             prev_code = callback_context.state.get(f"train_code_{step}_{task_id}", "")
-            new_code = prev_code.replace(code_block, code)
+            
+            # FIX: Prevent infinite loop bug from empty string replacement
+            if not code_block or not code_block.strip():
+                print(f"WARNING: code_block is empty for task {task_id}, step {step}. Using generated code as-is.")
+                new_code = code
+            elif code_block not in prev_code:
+                print(f"WARNING: code_block not found in prev_code for task {task_id}, step {step}. Using generated code as-is.")
+                new_code = code
+            else:
+                # Only replace if code_block is non-empty and exists exactly once
+                count = prev_code.count(code_block)
+                if count > 1:
+                    print(f"WARNING: code_block appears {count} times in prev_code. Replacing first occurrence only.")
+                    new_code = prev_code.replace(code_block, code, 1)
+                else:
+                    new_code = prev_code.replace(code_block, code)
         else:
             new_code = code
     else:
