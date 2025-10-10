@@ -18,6 +18,7 @@ BUG_REFINE_INSTR = """# Task description
 
 # Your task
 - Please revise the code to fix the error.
+- **COMMON BUG PATTERN:** If the error is a `KeyError` or `NameError` related to feature engineering, ensure that any new features created are applied consistently to **both** the training data (`X_train`, `X`) and the test data (`test_df`, `X_test_processed`).
 - If the error is a 'module not found` error, then install the necessary module. You can use `pip install <module>`, where `<module>` is the name of the module to install.
 - Do not remove subsampling if exists.
 - Provide the improved, self-contained Python script again.

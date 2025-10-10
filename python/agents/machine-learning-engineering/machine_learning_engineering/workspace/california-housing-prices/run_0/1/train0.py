@@ -1,69 +1,54 @@
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from catboost import CatBoostRegressor
+from sklearn.impute import SimpleImputer
 
-# Load the training data
+# --- 1. Data Loading and Preprocessing ---
+# Load the training data. Assume file exists as per instructions.
 train_df = pd.read_csv("./input/train.csv")
 
-# Separate target variable and features
-TARGET_COL = 'median_house_value'
-X = train_df.drop(columns=[TARGET_COL])
-y = train_df[TARGET_COL]
+# Separate features and target
+X = train_df.drop("median_house_value", axis=1)
+y = train_df["median_house_value"]
 
-# Handle missing values in features - impute with median for numerical columns
-# 'total_bedrooms' is a common column with missing values in this dataset type.
-for col in X.columns:
-    if X[col].isnull().any():
-        if pd.api.types.is_numeric_dtype(X[col]):
-            X[col] = X[col].fillna(X[col].median())
+# Handle missing values using SimpleImputer (median strategy)
+# This step is common to both base and reference solutions
+imputer = SimpleImputer(strategy='median')
+X_imputed = imputer.fit_transform(X)
+X = pd.DataFrame(X_imputed, columns=X.columns)
 
 # Split the data into training and validation sets
-# Using a fixed random_state for reproducibility
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- LightGBM Model Integration ---
-# Initialize LightGBM Regressor model
-model_lgbm = lgb.LGBMRegressor(objective='regression',
-                               metric='rmse',
-                               n_estimators=100,
-                               random_state=42,
-                               verbose=-1) # Suppress verbose output
+# --- 2. Model Training ---
 
-# Train the LightGBM model
-model_lgbm.fit(X_train, y_train)
+# 2.1. LightGBM Model (from Base Solution)
+print("Training LightGBM model...")
+lgbm_model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, silent=True)
+lgbm_model.fit(X_train, y_train)
+y_pred_lgbm = lgbm_model.predict(X_val)
+rmse_lgbm = np.sqrt(mean_squared_error(y_val, y_pred_lgbm))
+print(f"LightGBM Validation RMSE: {rmse_lgbm}")
 
-# Make predictions on the validation set using LightGBM
-y_pred_val_lgbm = model_lgbm.predict(X_val)
+# 2.2. XGBoost Model (from Reference Solution)
+print("Training XGBoost model...")
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', 
+                             random_state=42, n_jobs=-1, verbosity=0)
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_val)
+rmse_xgb = np.sqrt(mean_squared_error(y_val, y_pred_xgb))
+print(f"XGBoost Validation RMSE: {rmse_xgb}")
 
-# --- CatBoost Model Integration ---
-# Identify categorical features for CatBoost.
-# Based on the dataset description, all input features are numerical.
-categorical_features_indices = []
+# --- 3. Ensembling ---
+# Simple ensembling: average the predictions from both models
+print("Ensembling models...")
+y_pred_ensemble = (y_pred_lgbm + y_pred_xgb) / 2
 
-# Initialize CatBoost Regressor
-model_catboost = CatBoostRegressor(
-    loss_function='RMSE',
-    iterations=100,
-    random_state=42,
-    verbose=0, # Suppress model output during training
-    allow_writing_files=False # Suppress writing model files to disk
-)
+# --- 4. Evaluation of the Ensembled Model ---
+rmse_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_ensemble))
 
-# Train the CatBoost model
-model_catboost.fit(X_train, y_train, cat_features=categorical_features_indices)
-
-# Make predictions on the validation set using CatBoost
-y_pred_val_catboost = model_catboost.predict(X_val)
-
-# --- Ensembling Predictions ---
-# A simple average ensemble of the two models
-y_pred_val_ensemble = (y_pred_val_lgbm + y_pred_val_catboost) / 2
-
-# Calculate Root Mean Squared Error on the validation set for the ensembled predictions
-rmse_val_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_val_ensemble))
-
-# Print the final validation performance of the ensemble
-print(f"Final Validation Performance: {rmse_val_ensemble}")
+# Print the final validation performance
+print(f"Final Validation Performance: {rmse_ensemble}")

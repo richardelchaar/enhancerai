@@ -16,95 +16,65 @@ warnings.filterwarnings('ignore', category=ConvergenceWarning)
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from catboost import CatBoostRegressor
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.linear_model import BayesianRidge
 
-# Load the training data
+# --- 1. Data Loading and Preprocessing ---
+# Load the training data. Assume file exists as per instructions.
 train_df = pd.read_csv("./input/train.csv")
 
-# Separate target variable and features
-TARGET_COL = 'median_house_value'
-X = train_df.drop(columns=[TARGET_COL])
-y = train_df[TARGET_COL]
+# Separate features and target
+X = train_df.drop("median_house_value", axis=1)
+y = train_df["median_house_value"]
 
-# Handle missing values in features - impute with median for numerical columns
-# 'total_bedrooms' is a common column with missing values in this dataset type.
-for col in X.columns:
-    if X[col].isnull().any():
-        if pd.api.types.is_numeric_dtype(X[col]):
-            X[col] = X[col].fillna(X[col].median())
+# Handle missing values using IterativeImputer
+imputer = IterativeImputer(BayesianRidge(), max_iter=10, random_state=42)
+X_imputed = imputer.fit_transform(X)
+X = pd.DataFrame(X_imputed, columns=X.columns)
 
 # Split the data into training and validation sets
-# Using a fixed random_state for reproducibility
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- LightGBM Model Integration ---
-import lightgbm as lgb
-from sklearn.model_selection import RandomizedSearchCV
-from scipy.stats import uniform, randint
+# --- 2. Model Training ---
 
-# Define the parameter distribution for RandomizedSearchCV
-param_dist = {
-    'n_estimators': randint(low=50, high=300),        # Number of boosting rounds
-    'learning_rate': uniform(loc=0.01, scale=0.2),    # Step size shrinkage
-    'num_leaves': randint(low=20, high=60),           # Max number of leaves in one tree
-    'max_depth': randint(low=5, high=15),             # Max tree depth
-    'min_child_samples': randint(low=20, high=100),   # Minimum number of data in a child
-    'subsample': uniform(loc=0.6, scale=0.4),         # Subsample ratio of the training instance
-    'colsample_bytree': uniform(loc=0.6, scale=0.4),  # Subsample ratio of columns when constructing each tree
-    'reg_alpha': uniform(loc=0, scale=0.1),           # L1 regularization term
-    'reg_lambda': uniform(loc=0, scale=0.1),          # L2 regularization term
-}
+# 2.1. LightGBM Model (from Base Solution)
+lgbm_model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, silent=True)
+lgbm_model.fit(X_train, y_train)
+y_pred_lgbm = lgbm_model.predict(X_val)
 
-# Initialize a base LightGBM Regressor model
-base_lgbm = lgb.LGBMRegressor(objective='regression',
-                              metric='rmse',
-                              random_state=42,
-                              verbose=-1) # Suppress verbose output
+# 2.2. XGBoost Model (from Reference Solution)
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse',
+                             random_state=42, n_jobs=-1, verbosity=0)
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_val)
 
-# Initialize RandomizedSearchCV to optimize LightGBM hyperparameters
-model_lgbm = RandomizedSearchCV(estimator=base_lgbm,
-                                param_distributions=param_dist,
-                                n_iter=50,             # Number of parameter settings that are sampled
-                                scoring='neg_root_mean_squared_error', # Metric to optimize
-                                cv=5,                  # 5-fold cross-validation
-                                verbose=1,             # Verbosity level
-                                random_state=42,
-                                n_jobs=-1)             # Use all available cores
+# --- 3. Ensembling ---
+# Simple ensembling: average the predictions from both models
+y_pred_ensemble = (y_pred_lgbm + y_pred_xgb) / 2
 
-# Train the LightGBM model
-model_lgbm.fit(X_train, y_train)
+# --- 4. Evaluation of the Ensembled Model ---
+rmse_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_ensemble))
 
-# Make predictions on the validation set using LightGBM
-y_pred_val_lgbm = model_lgbm.predict(X_val)
+# Print the final validation performance
+print(f"Final Validation Performance: {rmse_ensemble}")
 
-# --- CatBoost Model Integration ---
-# Identify categorical features for CatBoost.
-# Based on the dataset description, all input features are numerical.
-categorical_features_indices = []
+# --- 5. Prepare for Submission ---
+# Load the test data
+test_df = pd.read_csv("./input/test.csv")
 
-# Initialize CatBoost Regressor
-model_catboost = CatBoostRegressor(
-    loss_function='RMSE',
-    iterations=100,
-    random_state=42,
-    verbose=0, # Suppress model output during training
-    allow_writing_files=False # Suppress writing model files to disk
-)
+# Impute missing values in test data using the *fitted* imputer
+test_imputed = imputer.transform(test_df)
+test_df_imputed = pd.DataFrame(test_imputed, columns=test_df.columns)
 
-# Train the CatBoost model
-model_catboost.fit(X_train, y_train, cat_features=categorical_features_indices)
+# Generate predictions on the test set
+test_pred_lgbm = lgbm_model.predict(test_df_imputed)
+test_pred_xgb = xgb_model.predict(test_df_imputed)
+test_pred_ensemble = (test_pred_lgbm + test_pred_xgb) / 2
 
-# Make predictions on the validation set using CatBoost
-y_pred_val_catboost = model_catboost.predict(X_val)
-
-# --- Ensembling Predictions ---
-# A simple average ensemble of the two models
-y_pred_val_ensemble = (y_pred_val_lgbm + y_pred_val_catboost) / 2
-
-# Calculate Root Mean Squared Error on the validation set for the ensembled predictions
-rmse_val_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_val_ensemble))
-
-# Print the final validation performance of the ensemble
-print(f"Final Validation Performance: {rmse_val_ensemble}")
+# Create submission file
+submission_df = pd.DataFrame({'median_house_value': test_pred_ensemble})
+submission_df.to_csv("submission.csv", index=False)

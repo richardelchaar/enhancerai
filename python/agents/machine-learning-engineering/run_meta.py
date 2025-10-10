@@ -105,6 +105,103 @@ class MetaOrchestrator:
         initial_state["run_dir"] = run_dir
         initial_state["run_id"] = run_id
 
+        # PHASE 2: LINEAR REFINEMENT MODE - Seed state with champion from previous run
+        is_refinement_run = run_id > 0
+        
+        # Reset num_solutions for discovery runs (in case it was overridden before)
+        if not is_refinement_run:
+            config.CONFIG.num_solutions = run_config.get("num_solutions", 2)
+        
+        if is_refinement_run:
+            print(f"[Run {run_id}] Initializing Linear Refinement Mode")
+            
+            # CRITICAL: Agents were constructed at import time with run_config's num_solutions
+            # We need to create directories for ALL tasks the agents expect, even if we only use task 1
+            num_solutions_from_agents = run_config.get("num_solutions", config.CONFIG.num_solutions)
+            
+            # Override CONFIG.num_solutions to 1 for linear refinement logic
+            config.CONFIG.num_solutions = 1
+            print(f"[Run {run_id}] Linear refinement mode: will only refine 1 solution (champion)")
+            print(f"[Run {run_id}] But creating {num_solutions_from_agents} directories for agent compatibility")
+            
+            # Load run history to find the champion
+            if not os.path.exists(self.run_history_path):
+                raise FileNotFoundError(f"Run history not found at {self.run_history_path}. Cannot run refinement mode without previous run.")
+            
+            with open(self.run_history_path, "r") as f:
+                history = json.load(f)
+            
+            # Get the best solution from the most recent run
+            last_run = history[-1]
+            champion_relative_path = last_run["best_solution_path"]
+            champion_full_path = os.path.join(self.workspace_root, champion_relative_path)
+            
+            print(f"[Run {run_id}] Loading champion from: {champion_full_path}")
+            
+            # Read the champion code
+            if not os.path.exists(champion_full_path):
+                raise FileNotFoundError(f"Champion code not found at {champion_full_path}")
+            
+            with open(champion_full_path, "r") as f:
+                champion_code = f.read()
+            
+            # Read task description (normally loaded by initialization agent's prepare_task)
+            task_desc_path = os.path.join(config.CONFIG.data_dir, self.task_name, "task_description.txt")
+            if os.path.exists(task_desc_path):
+                with open(task_desc_path, "r") as f:
+                    initial_state["task_description"] = f.read()
+            
+            # CRITICAL: Create task subdirectories for ALL tasks that agents expect
+            # Agents were constructed at import time with num_solutions_from_agents
+            # Even though only Task 1 will execute (Task 2+ are skipped via wrapper),
+            # we create all directories to avoid FileNotFoundError if agents check for them
+            for task_id in range(1, num_solutions_from_agents + 1):
+                task_dir = os.path.join(run_dir, str(task_id))
+                os.makedirs(task_dir, exist_ok=True)
+                
+                # Copy input data to each task directory (needed for code execution)
+                input_dir = os.path.join(task_dir, "input")
+                os.makedirs(input_dir, exist_ok=True)
+                
+                # Copy training data files
+                source_data_dir = os.path.join(config.CONFIG.data_dir, self.task_name)
+                for data_file in ["train.csv", "test.csv", "task_description.txt"]:
+                    source_file = os.path.join(source_data_dir, data_file)
+                    dest_file = os.path.join(input_dir, data_file)
+                    if os.path.exists(source_file):
+                        shutil.copy2(source_file, dest_file)
+            
+            # Create ensemble directory (needed for submission agent even though we skip ensemble agent)
+            ensemble_dir = os.path.join(run_dir, "ensemble")
+            os.makedirs(ensemble_dir, exist_ok=True)
+            ensemble_input_dir = os.path.join(ensemble_dir, "input")
+            os.makedirs(ensemble_input_dir, exist_ok=True)
+            
+            # Copy data to ensemble directory as well
+            source_data_dir = os.path.join(config.CONFIG.data_dir, self.task_name)
+            for data_file in ["train.csv", "test.csv", "task_description.txt"]:
+                source_file = os.path.join(source_data_dir, data_file)
+                dest_file = os.path.join(ensemble_input_dir, data_file)
+                if os.path.exists(source_file):
+                    shutil.copy2(source_file, dest_file)
+            
+            # CRITICAL: Seed ALL task IDs with champion code
+            # The refinement agent created agents at import time based on num_solutions_from_agents
+            # Even though only Task 1 executes (Task 2+ skipped), we seed all to avoid state errors
+            for task_id in range(1, num_solutions_from_agents + 1):
+                initial_state[f"train_code_0_{task_id}"] = champion_code
+                initial_state[f"train_code_exec_result_0_{task_id}"] = {
+                    "score": last_run["best_score"],
+                    "returncode": 0
+                }
+            
+            # Set refinement-only mode flag
+            initial_state["is_refinement_run"] = True
+            initial_state["num_solutions"] = 1  # LINEAR REFINEMENT: Only refine 1 solution (the champion)
+            print(f"[Run {run_id}] Created workspace structure and seeded {num_solutions_from_agents} task(s) with champion code (score: {last_run['best_score']})")
+            print(f"[Run {run_id}] LINEAR REFINEMENT MODE: Only Task 1 will execute (Task 2+ skipped)")
+            print(f"[Run {run_id}] Note: All {num_solutions_from_agents} task directories created for agent compatibility")
+
         runner = InMemoryRunner(agent=mle_pipeline_agent, app_name="mle-meta-pipeline")
         try:
             session = await runner.session_service.create_session(
@@ -146,25 +243,35 @@ class MetaOrchestrator:
 
     def _update_run_history(self, run_id: int, final_state: Dict[str, Any]):
         """Parses the final state and updates the persistent run history."""
-        # Find the best score from this run
+        # Find the best score AND path from this run
         best_score = None
+        best_solution_path = None
         lower_is_better = final_state.get("lower", True)
         
         # Check all potential final solutions from all parallel initializations
         for i in range(final_state.get("num_solutions", 1)):
             task_id = i + 1
             # Check final refined score
-            refined_score = final_state.get(f"train_code_exec_result_{final_state.get(f'refine_step_{task_id}', 0)}_{task_id}", {}).get("score")
+            last_step = final_state.get(f'refine_step_{task_id}', 0)
+            refined_score = final_state.get(f"train_code_exec_result_{last_step}_{task_id}", {}).get("score")
             if refined_score is not None:
                 if best_score is None or (lower_is_better and refined_score < best_score) or (not lower_is_better and refined_score > best_score):
                     best_score = refined_score
+                    # Track the actual file path for this refined solution
+                    best_solution_path = f"run_{run_id}/{task_id}/train{last_step}_{task_id}.py"
 
-            # Check final ensembled score
-            ensemble_iter = final_state.get("ensemble_iter", 0)
-            ensembled_score = final_state.get(f"ensemble_code_exec_result_{ensemble_iter}", {}).get("score")
-            if ensembled_score is not None:
-                if best_score is None or (lower_is_better and ensembled_score < best_score) or (not lower_is_better and ensembled_score > best_score):
-                    best_score = ensembled_score
+        # Check final ensembled score
+        ensemble_iter = final_state.get("ensemble_iter", 0)
+        ensembled_score = final_state.get(f"ensemble_code_exec_result_{ensemble_iter}", {}).get("score")
+        if ensembled_score is not None:
+            if best_score is None or (lower_is_better and ensembled_score < best_score) or (not lower_is_better and ensembled_score > best_score):
+                best_score = ensembled_score
+                best_solution_path = f"run_{run_id}/ensemble/final_solution.py"
+        
+        # Fallback if no valid solution found
+        if best_solution_path is None:
+            best_solution_path = f"run_{run_id}/ensemble/final_solution.py"
+            print(f"WARNING: No valid solution found for run {run_id}, defaulting to ensemble path")
                     
         run_summary = {
             "run_id": run_id,
@@ -172,7 +279,7 @@ class MetaOrchestrator:
             "start_time_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(final_state.get("start_time", time.time()))),
             "duration_seconds": round(time.time() - final_state.get("start_time", time.time())),
             "best_score": best_score,
-            "best_solution_path": f"run_{run_id}/ensemble/final_solution.py",
+            "best_solution_path": best_solution_path,
             "config_used": {k: v for k, v in final_state.items() if isinstance(v, (int, str, bool, float))},
             "enhancer_rationale": "Baseline run." if run_id == 0 else self.run_history[-1].get("enhancer_output", {}).get("strategic_summary", "N/A")
         }

@@ -51,41 +51,80 @@ def get_ablation_summary_agent_instruction(
 
 
 def get_plan_generation_instruction(context: callback_context_module.ReadonlyContext) -> str:
-    """Gets the instruction for the new Planner agent."""
+    """Gets the instruction for the Planner agent.
+    
+    Conditionally selects between:
+    - BASELINE prompt (Run 0): Simple, ablation-driven, avoids expensive operations
+    - ENHANCED prompt (Run 1+): Strategic, enforces ALL enhancer goals
+    """
     task_id = context.agent_name.split("_")[-1]
     step = context.state.get(f"refine_step_{task_id}", 0)
     code = context.state.get(f"train_code_{step}_{task_id}", "")
     ablation_summary = context.state.get(f"ablation_summary_{step}_{task_id}", "")
+    num_steps_required = context.state.get("inner_loop_round", 1)
+    run_id = context.state.get("run_id", 0)
 
-    # --- FIX: Dynamically build strategic guidance string ---
+    # Check if we have enhancer strategic guidance
     enhancer_output = context.state.get("enhancer_output", {})
     strategic_goals = enhancer_output.get("strategic_goals", [])
-
-    refinement_goals = [
-        f"- Focus Area: {g['focus']}. Rationale: {g['rationale']}"
-        for g in strategic_goals if g.get("target_agent_phase") == "refinement"
-    ]
-
-    enhancer_goals_str = "\n".join(refinement_goals)
-    if not enhancer_goals_str:
-        # Distinguish between missing vs intentionally empty strategic goals
-        enhancer_output = context.state.get("enhancer_output", {})
-        run_id = context.state.get("run_id", 0)
-
-        # Only warn about missing strategic_goals after Run 0 (when Enhancer should have run)
-        if run_id > 0 and "strategic_goals" not in enhancer_output:
-            print(f"WARNING: enhancer_output.strategic_goals is missing entirely for task {context.agent_name.split('_')[-1]} - possible schema mismatch")
-        elif run_id > 0 and not enhancer_output.get("strategic_goals"):
-            print(f"INFO: No strategic goals provided by Enhancer for task {context.agent_name.split('_')[-1]} - using ablation-driven planning")
-
-        enhancer_goals_str = "No specific strategic goals provided. Use the ablation summary to find the best area for improvement."
-    # --- END FIX ---
     
-    return prompt.PLAN_GENERATION_INSTR.format(
-        enhancer_goals=enhancer_goals_str,
-        ablation_summary=ablation_summary,
-        code=code,
-    )
+    # Filter goals for refinement phase only
+    refinement_goals = [
+        g for g in strategic_goals if g.get("target_agent_phase") == "refinement"
+    ]
+    
+    # Decision: Use enhanced prompt if we have refinement goals from enhancer
+    has_strategic_guidance = run_id > 0 and len(refinement_goals) > 0
+    
+    if has_strategic_guidance:
+        # RUN 1+ WITH ENHANCER GUIDANCE - Use strategic enhanced prompt
+        # Format goals with priority order
+        sorted_goals = sorted(refinement_goals, key=lambda x: x.get('priority', 99))
+        
+        # DEBUG: Print what goals we're working with
+        print(f"[Task {task_id}] DEBUG: Refinement goals received: {len(refinement_goals)} goals")
+        for i, g in enumerate(sorted_goals):
+            print(f"  [{i}] Priority {g.get('priority')}: {g.get('focus')} (target: {g.get('target_agent_phase')})")
+        
+        enhancer_goals_str = "\n".join([
+            f"Priority {g.get('priority', i+1)}: {g.get('focus', 'Unknown')} - {g.get('rationale', 'No rationale provided')}"
+            for i, g in enumerate(sorted_goals)
+        ])
+        
+        # DEBUG: Show what string is being passed to LLM
+        print(f"[Task {task_id}] DEBUG: Strategic goals string being sent to planner:")
+        print(f"---\n{enhancer_goals_str}\n---")
+        
+        # Smart note: Handle mismatch between number of goals and steps
+        num_goals = len(refinement_goals)
+        if num_goals > num_steps_required:
+            enhancer_goals_str += f"\n\nNote: You have {num_goals} goals but only {num_steps_required} steps. Prioritize the highest priority goals."
+            print(f"[Task {task_id}] Using ENHANCED planning: {num_goals} goals > {num_steps_required} steps (will prioritize)")
+        elif num_goals < num_steps_required:
+            enhancer_goals_str += f"\n\nNote: You have {num_goals} mandatory goals and {num_steps_required} steps. Implement all goals first, then use remaining steps for ablation-driven improvements."
+            print(f"[Task {task_id}] Using ENHANCED planning: {num_goals} goals < {num_steps_required} steps (will supplement)")
+        else:
+            print(f"[Task {task_id}] Using ENHANCED planning: {num_goals} goals = {num_steps_required} steps (perfect match)")
+        
+        return prompt.PLAN_GENERATION_ENHANCED_INSTR.format(
+            enhancer_goals=enhancer_goals_str,
+            ablation_summary=ablation_summary,
+            code=code,
+            num_steps_required=num_steps_required,
+        )
+    else:
+        # RUN 0 WITHOUT ENHANCER GUIDANCE - Use baseline prompt (like original MLE-STAR)
+        if run_id > 0:
+            # Edge case: Run 1+ but no refinement goals (shouldn't happen but handle gracefully)
+            print(f"[Task {task_id}] WARNING: Run {run_id} but no refinement goals found. Falling back to baseline planning.")
+        else:
+            print(f"[Task {task_id}] Using BASELINE planning prompt (ablation-driven, Run 0)")
+        
+        return prompt.PLAN_GENERATION_BASELINE_INSTR.format(
+            ablation_summary=ablation_summary,
+            code=code,
+            num_steps_required=num_steps_required,
+        )
 
 
 def get_plan_step_implement_instruction(context: callback_context_module.ReadonlyContext) -> str:
@@ -93,11 +132,24 @@ def get_plan_step_implement_instruction(context: callback_context_module.Readonl
     task_id = context.agent_name.split("_")[-1]
     plan_step_description = context.state.get(f"current_plan_step_description_{task_id}", "")
     code_block_to_refine = context.state.get(f"current_code_block_to_refine_{task_id}", "")
-
-    return prompt.IMPLEMENT_PLAN_STEP_INSTR.format(
-        code_block=code_block_to_refine,
-        plan_step_description=plan_step_description,
-    )
+    feature_engineering_function = context.state.get(f"current_feature_engineering_function_{task_id}", "")
+    
+    # Check if this is a feature engineering step
+    if feature_engineering_function:
+        # Provide the entire script as context for feature engineering
+        refine_step = context.state.get(f"refine_step_{task_id}", 0)
+        full_code = context.state.get(f"train_code_{refine_step}_{task_id}", "")
+        return prompt.IMPLEMENT_FEATURE_ENGINEERING_INSTR.format(
+            full_code=full_code,
+            feature_engineering_function=feature_engineering_function,
+            plan_step_description=plan_step_description,
+        )
+    else:
+        # Standard implementation for other steps
+        return prompt.IMPLEMENT_PLAN_STEP_INSTR.format(
+            code_block=code_block_to_refine,
+            plan_step_description=plan_step_description,
+        )
 
 
 # --- Callbacks for State Management ---
@@ -116,6 +168,18 @@ def parse_and_store_plan(
         plan: List[Dict[str, Any]] = json.loads(json_str)
         if not isinstance(plan, list) or not all("plan_step_description" in p for p in plan):
             raise ValueError("Plan is not a valid list of steps.")
+        
+        # FIX: Add validation to ensure planner provides a valid code block to prevent infinite debug loops
+        for i, step in enumerate(plan):
+            # A valid step must have ONE of the two required keys, but not both.
+            has_code_block = step.get("code_block_to_refine") and step["code_block_to_refine"].strip()
+            has_feature_func = step.get("feature_engineering_function") and step["feature_engineering_function"].strip()
+            
+            if not (has_code_block or has_feature_func):
+                raise ValueError(f"Plan step {i} is missing a required key ('code_block_to_refine' or 'feature_engineering_function').")
+            if has_code_block and has_feature_func:
+                raise ValueError(f"Plan step {i} has both 'code_block_to_refine' and 'feature_engineering_function'. Only one is allowed.")
+
         callback_context.state[f"refinement_plan_{task_id}"] = plan
         callback_context.state[f"plan_step_count_{task_id}"] = len(plan)
     except (json.JSONDecodeError, ValueError) as e:
@@ -134,7 +198,8 @@ def load_plan_step_for_execution(
     plan = callback_context.state.get(f"refinement_plan_{task_id}", [])
     step_idx = callback_context.state.get(f"plan_execution_step_{task_id}", 0)
 
-    # Check if previous step failed before loading next step
+    # Check if previous step failed - log it but continue trying remaining steps
+    # This ensures all strategic goals get attempted even if some fail
     if step_idx > 0:
         refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
         prev_result = callback_context.state.get(
@@ -142,17 +207,30 @@ def load_plan_step_for_execution(
             {}
         )
         if not prev_result or prev_result.get("returncode", -1) != 0:
-            print(f"WARNING: Plan execution halted for task {task_id} - step {step_idx-1} failed or returned no result")
-            return llm_response_module.LlmResponse()  # Skip remaining steps
+            print(f"WARNING: Plan step {step_idx-1} for task {task_id} failed - continuing to next step...")
+            # Continue to next step instead of halting - this ensures all strategic goals are attempted
 
+    # PHASE 4: Self-terminating condition - stop when plan is complete
     if step_idx >= len(plan):
+        print(f"INFO: Refinement plan for task {task_id} complete ({len(plan)} steps executed). Halting loop.")
         return llm_response_module.LlmResponse() # Skip if plan is finished
 
     current_step = plan[step_idx]
     refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
     callback_context.state[f"current_plan_step_description_{task_id}"] = current_step.get("plan_step_description", "")
-    callback_context.state[f"current_code_block_to_refine_{task_id}"] = current_step.get("code_block_to_refine", "")
     
+    # Handle the two types of plan steps
+    if "feature_engineering_function" in current_step:
+        # New robust path for feature engineering
+        callback_context.state[f"current_feature_engineering_function_{task_id}"] = current_step.get("feature_engineering_function", "")
+        # Clear the old key to avoid confusion
+        callback_context.state[f"current_code_block_to_refine_{task_id}"] = ""
+    else:
+        # Standard path for other refinements
+        callback_context.state[f"current_code_block_to_refine_{task_id}"] = current_step.get("code_block_to_refine", "")
+        # Clear the new key
+        callback_context.state[f"current_feature_engineering_function_{task_id}"] = ""
+
     # FIX: Store the code block with the correct key that debug_util expects
     callback_context.state[f"refine_code_block_{refine_step}_{task_id}"] = current_step.get("code_block_to_refine", "")
 
@@ -169,14 +247,19 @@ def update_plan_execution_step(
     step_idx = callback_context.state.get(f"plan_execution_step_{task_id}", 0)
     refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
 
-    # Only increment if current step succeeded
+    # Get the result of the step that just ran by reading from the state
     result = callback_context.state.get(
         f"train_code_improve_exec_result_{step_idx}_{refine_step}_{task_id}", {}
     )
-    if result and result.get("returncode") == 0:
-        callback_context.state[f"plan_execution_step_{task_id}"] = step_idx + 1
+
+    # Always advance to next step to ensure all strategic goals are attempted
+    callback_context.state[f"plan_execution_step_{task_id}"] = step_idx + 1
+    
+    if not result or result.get("returncode") != 0:
+        print(f"INFO: Step {step_idx} for task {task_id} failed, but advancing to next step to try remaining strategies.")
     else:
-        print(f"WARNING: Not advancing to next plan step for task {task_id} - current step {step_idx} failed")
+        print(f"INFO: Step {step_idx} for task {task_id} succeeded. Advancing to next step.")
+    
     return None
 
 
@@ -312,7 +395,7 @@ for k in range(config.CONFIG.num_solutions):
         model=config.CONFIG.agent_model,
         instruction=get_plan_generation_instruction,
         after_model_callback=parse_and_store_plan,
-        generate_content_config=types.GenerateContentConfig(temperature=1.0),
+        generate_content_config=types.GenerateContentConfig(temperature=0.0),
         include_contents="none",
     )
 
@@ -357,9 +440,51 @@ for k in range(config.CONFIG.num_solutions):
     )
     refinement_parallel_sub_agents.append(ablation_and_refine_loop_agent)
 
+# --- Conditional Task Execution for Refinement Mode ---
+
+def skip_if_refinement_mode_and_not_task_1(
+    callback_context: callback_context_module.CallbackContext
+) -> Optional[types.Content]:
+    """Skips tasks 2+ in refinement-only mode (linear refinement uses only Task 1)."""
+    is_refinement_run = callback_context.state.get("is_refinement_run", False)
+    agent_name = callback_context.agent_name
+    
+    # Extract task_id from agent name (e.g., "task_2_wrapper" -> "2")
+    # The agent name will be "task_X_wrapper" for wrapped agents
+    if "_wrapper" in agent_name:
+        task_id = agent_name.split("_")[1]
+    else:
+        # Fallback: try to extract from sub-agent name
+        return None
+    
+    if is_refinement_run and task_id != "1":
+        print(f"[Refinement Mode] Skipping Task {task_id} (linear refinement uses only Task 1)")
+        return types.Content(parts=[types.Part(text="skipped")], role="model")
+    return None
+
+# Wrap each task agent (except task 1) with conditional skip for refinement runs
+wrapped_refinement_sub_agents: List[agents.BaseAgent] = []
+for i, task_agent in enumerate(refinement_parallel_sub_agents):
+    task_id = str(i + 1)
+    if task_id == "1":
+        # Task 1: always runs
+        wrapped_refinement_sub_agents.append(task_agent)
+    else:
+        # Task 2+: wrapped with conditional skip for refinement runs
+        wrapper = agents.SequentialAgent(
+            name=f"task_{task_id}_wrapper",
+            sub_agents=[task_agent],
+            description=f"Task {task_id} wrapper (skipped in refinement mode)",
+            before_agent_callback=skip_if_refinement_mode_and_not_task_1,
+        )
+        wrapped_refinement_sub_agents.append(wrapper)
+
 # The final top-level refinement agent
-refinement_agent = agents.ParallelAgent(
+# Changed from ParallelAgent to SequentialAgent for deterministic, one-at-a-time execution
+# In Run 0: executes all tasks sequentially (Task 1, then Task 2)
+# In Run 1+: only Task 1 executes (Task 2+ are skipped via wrapper)
+refinement_agent = agents.SequentialAgent(
     name="refinement_agent",
-    description="Refine each solution in parallel using a mission-oriented approach.",
-    sub_agents=refinement_parallel_sub_agents,
+    description="Refine solutions sequentially (all tasks for Run 0, only Task 1 for Run 1+).",
+    sub_agents=wrapped_refinement_sub_agents,
 )

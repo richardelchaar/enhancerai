@@ -31,6 +31,8 @@ aiohttp = "^3.9.0"
 # want to use PyTorch on a different hardware architecture or CPU.
 # (https://download.pytorch.org/whl)
 # Pin to a stable PyPI wheel to avoid CPU-index resolution issues
+autopep8 = "^2.3.2"
+xgboost = ">=1.6.0"
 
 [tool.poetry.group.dev]
 optional = true

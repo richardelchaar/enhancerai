@@ -20,6 +20,7 @@ MODEL_RETRIEVAL_INSTR = """# Competition
 # Requirement
 - The example code should be concise and simple.
 - You must provide an example code, i.e., do not just mention GitHubs or papers.
+- **IMPORTANT: Only suggest traditional ML algorithms (e.g., LightGBM, XGBoost, CatBoost, RandomForest, Ridge, Lasso). DO NOT suggest neural networks, deep learning, or PyTorch/TensorFlow models.**
 
 Use this JSON schema:
 Model = {{'model_name': str, 'example_code': str}}
@@ -43,8 +44,7 @@ MODEL_EVAL_INSTR = """# Introduction
 - This first solution design should be relatively simple, without ensembling or hyper-parameter optimization.
 - Propose an evaluation metric that is reasonable for this task.
 - All the provided data is already prepared and available in the `./input` directory. There is no need to unzip any files.
-- Do not include other models that are not directly related to the model described.
-- Use PyTorch rather than TensorFlow. Use CUDA if you need. All the necessary libraries are installed.
+- **CRITICAL: Only use traditional ML algorithms (LightGBM, XGBoost, CatBoost, RandomForest, Ridge, Lasso, etc.). DO NOT use neural networks, deep learning, PyTorch, TensorFlow, or Keras.**
 - The code should implement the proposed solution and print the value of the evaluation metric computed on a hold-out validation set.
 - Only use the provided train data in the `./input` directory.
 - IMPORTANT: Suppress all verbose model output (use verbose=0, silent=True, etc.) to prevent excessive logging.
@@ -55,7 +55,8 @@ MODEL_EVAL_INSTR = """# Introduction
 - The code should be a single-file Python program that is self-contained and can be executed as-is.
 - Your response should only contain a single code block.
 - Do not use exit() function in the Python code.
-- Do not use try: and except: or if else to ignore unintended behavior.
+- **CRITICAL: Do NOT use try/except blocks** - they cause indentation errors in downstream processing. Assume files exist and handle errors by checking conditions (e.g., `if data.isnull().any():`).
+- Keep if/else blocks simple and avoid deep nesting.
 """
 
 BUG_SUMMARY_INSTR = """# Error report
@@ -83,7 +84,8 @@ BUG_REFINE_INSTR = """# Task description
 - Remember to print a line in the code with 'Final Validation Performance: {{final_validation_score}}' so we can parse performance.
 - The code should be a single-file python program that is self-contained and can be executed as-is.
 - Your response should only contain a single code block.
-- Do not use exit() function in the refined Python code."""
+- Do not use exit() function in the refined Python code.
+- **CRITICAL: Do NOT use try/except blocks** - they cause indentation errors. Assume files exist and handle errors by checking conditions."""
 
 CODE_INTEGRATION_INSTR = """# Introduction
 - You are a Kaggle grandmaster attending a competition.
@@ -117,7 +119,7 @@ CODE_INTEGRATION_INSTR = """# Introduction
 - The code should be a single-file Python program that is self-contained and can be executed as-is.
 - Your response should only contain a single code block.
 - Do not use exit() function in the Python code.
-- Do not use try: and except: or if else to ignore unintended behavior."""
+- **CRITICAL: Do NOT use try/except blocks** - they cause indentation errors. Assume files exist and handle errors by checking conditions."""
 
 CHECK_DATA_USE_INSTR = """I have provided Python code for a machine learning task (attached below):
 # Solution Code
@@ -129,8 +131,8 @@ CHECK_DATA_USE_INSTR = """I have provided Python code for a machine learning tas
 {task_description}
 
 # Your task
-If the above solution code does not use the information provided, try to incorporate all. Do not bypass using try-except.
-DO NOT USE TRY and EXCEPT; just occur error so we can debug it!
+If the above solution code does not use the information provided, try to incorporate all.
+**CRITICAL: Do NOT use try/except blocks** - they cause indentation errors. Let errors occur naturally so we can debug them.
 See the task description carefully, to know how to extract unused information effectively.
 When improving the solution code by incorporating unused information, DO NOT FORGET to print out 'Final Validation Performance: {{final_validation_score}}' as in original solution code.
 

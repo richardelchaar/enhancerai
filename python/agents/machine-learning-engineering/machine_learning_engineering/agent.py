@@ -36,15 +36,45 @@ def save_state(
     return None
 
 
+def skip_if_refinement_mode(
+    callback_context: callback_context_module.CallbackContext
+) -> Optional[types.Content]:
+    """Skips initialization and ensemble in refinement-only mode."""
+    if callback_context.state.get("is_refinement_run", False):
+        print(f"[Refinement Mode] Skipping {callback_context.agent_name}")
+        return types.Content(parts=[types.Part(text="skipped")], role="model")
+    return None
+
+
+# PHASE 3: CONDITIONAL PIPELINE ARCHITECTURE FOR LINEAR REFINEMENT
+
+# Wrapper agents with conditional skip logic
+initialization_agent_wrapper = agents.SequentialAgent(
+    name="initialization_agent_wrapper",
+    sub_agents=[initialization_agent_module.initialization_agent],
+    description="Initialization agent - skipped in refinement mode",
+    before_agent_callback=skip_if_refinement_mode,
+)
+
+ensemble_agent_wrapper = agents.SequentialAgent(
+    name="ensemble_agent_wrapper",
+    sub_agents=[ensemble_agent_module.ensemble_agent],
+    description="Ensemble agent - skipped in refinement mode",
+    before_agent_callback=skip_if_refinement_mode,
+)
+
+# Main pipeline with conditional execution
+# - Run 0 (Discovery Mode): Executes all agents (initialization, refinement, ensemble, submission)
+# - Run 1+ (Refinement Mode): Skips initialization and ensemble, only runs refinement and submission
 mle_pipeline_agent = agents.SequentialAgent(
     name="mle_pipeline_agent",
     sub_agents=[
-        initialization_agent_module.initialization_agent,
-        refinement_agent_module.refinement_agent,
-        ensemble_agent_module.ensemble_agent,
-        submission_agent_module.submission_agent,
+        initialization_agent_wrapper,  # Skipped in refinement mode
+        refinement_agent_module.refinement_agent,  # Always runs
+        ensemble_agent_wrapper,  # Skipped in refinement mode
+        submission_agent_module.submission_agent,  # Always runs
     ],
-    description="Executes a sequence of sub-agents for solving the MLE task.",
+    description="Adaptive pipeline: full discovery (Run 0) or focused refinement (Run 1+)",
     after_agent_callback=save_state,
 )
 

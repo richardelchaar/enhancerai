@@ -356,7 +356,7 @@ def get_run_and_debug_agent(
             do_eval=not use_data_leakage_checker,
         ),
         generate_content_config=types.GenerateContentConfig(
-            temperature=1.0,
+            temperature=0.0,
         ),
         include_contents="none",
     )

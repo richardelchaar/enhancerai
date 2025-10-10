@@ -17,119 +17,53 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
-import lightgbm as lgb
-from catboost import CatBoostRegressor
-from sklearn.model_selection import RandomizedSearchCV
-from scipy.stats import uniform, randint
-import xgboost as xgb
 
 # Load the training data
 train_df = pd.read_csv("./input/train.csv")
 
-# Separate target variable and features
-TARGET_COL = 'median_house_value'
-X = train_df.drop(columns=[TARGET_COL])
-y = train_df[TARGET_COL]
+# Separate features and target
+X = train_df.drop("median_house_value", axis=1)
+y = train_df["median_house_value"]
 
-# Identify numerical features for imputation (all features are numerical in this context)
-numerical_features = X.select_dtypes(include=np.number).columns
-
-# Impute missing values using median strategy (from Solution 2)
+# Handle missing values using SimpleImputer (median strategy) for all numerical columns
+# It's crucial to fit the imputer on the training data only and then transform both train and test.
 imputer = SimpleImputer(strategy='median')
-X[numerical_features] = imputer.fit_transform(X[numerical_features])
+X_imputed = imputer.fit_transform(X)
+X = pd.DataFrame(X_imputed, columns=X.columns)
 
-# Split the data into training and validation sets
-# Using a fixed random_state for reproducibility, consistent with both solutions
+# Split the data into training and validation sets for consistent evaluation
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- LightGBM Model from Solution 1 ---
-# Define the parameter distribution for RandomizedSearchCV
-param_dist_lgbm_s1 = {
-    'n_estimators': randint(low=50, high=300),
-    'learning_rate': uniform(loc=0.01, scale=0.2),
-    'num_leaves': randint(low=20, high=60),
-    'max_depth': randint(low=5, high=15),
-    'min_child_samples': randint(low=20, high=100),
-    'subsample': uniform(loc=0.6, scale=0.4),
-    'colsample_bytree': uniform(loc=0.6, scale=0.4),
-    'reg_alpha': uniform(loc=0, scale=0.1),
-    'reg_lambda': uniform(loc=0, scale=0.1),
-}
+# Initialize and train a RandomForestRegressor model
+# Suppress verbose output by setting verbose=0
+model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1, verbose=0)
+model.fit(X_train, y_train)
 
-# Initialize a base LightGBM Regressor model
-base_lgbm_s1 = lgb.LGBMRegressor(objective='regression',
-                                 metric='rmse',
-                                 random_state=42,
-                                 verbose=-1)
+# Make predictions on the validation set
+y_pred_val = model.predict(X_val)
 
-# Initialize RandomizedSearchCV to optimize LightGBM hyperparameters
-model_lgbm_s1 = RandomizedSearchCV(estimator=base_lgbm_s1,
-                                   param_distributions=param_dist_lgbm_s1,
-                                   n_iter=50,
-                                   scoring='neg_root_mean_squared_error',
-                                   cv=5,
-                                   verbose=0, # Suppress verbose output during execution
-                                   random_state=42,
-                                   n_jobs=-1)
+# Calculate Root Mean Squared Error (RMSE)
+# The 'squared' parameter is not supported in older scikit-learn versions.
+# Calculate MSE first, then take the square root to get RMSE.
+mse = mean_squared_error(y_val, y_pred_val)
+final_validation_score = np.sqrt(mse)
 
-# Train the LightGBM model
-model_lgbm_s1.fit(X_train, y_train)
+# Print the final validation performance
+print(f"Final Validation Performance: {final_validation_score}")
 
-# Make predictions on the validation set using LightGBM
-y_pred_val_lgbm_s1 = model_lgbm_s1.predict(X_val)
+# Load the test data
+test_df = pd.read_csv("./input/test.csv")
 
-# --- CatBoost Model from Solution 1 ---
-# Identify categorical features for CatBoost (assuming none for this dataset as per S1)
-categorical_features_indices = []
+# Apply the *same* imputer fitted on the training data to the test data.
+# This prevents data leakage from the test set.
+test_imputed = imputer.transform(test_df)
+test_df_processed = pd.DataFrame(test_imputed, columns=test_df.columns)
 
-# Initialize CatBoost Regressor
-model_catboost_s1 = CatBoostRegressor(
-    loss_function='RMSE',
-    iterations=100,
-    random_state=42,
-    verbose=0,
-    allow_writing_files=False
-)
+# Make predictions on the processed test data
+test_predictions = model.predict(test_df_processed)
 
-# Train the CatBoost model
-model_catboost_s1.fit(X_train, y_train, cat_features=categorical_features_indices)
-
-# Make predictions on the validation set using CatBoost
-y_pred_val_catboost_s1 = model_catboost_s1.predict(X_val)
-
-# --- Ensemble Solution 1's predictions ---
-y_pred_val_s1_ensemble = (y_pred_val_lgbm_s1 + y_pred_val_catboost_s1) / 2
-
-# --- LightGBM Model from Solution 2 ---
-# Initialize and train the LGBMRegressor model
-model_lgbm_s2 = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
-model_lgbm_s2.fit(X_train, y_train)
-
-# Make predictions on the validation set with LGBM
-y_pred_val_lgbm_s2 = model_lgbm_s2.predict(X_val)
-
-# --- XGBoost Model from Solution 2 ---
-# Initialize and train the XGBRegressor model
-model_xgb_s2 = xgb.XGBRegressor(objective='reg:squarederror',
-                             eval_metric='rmse',
-                             random_state=42,
-                             n_jobs=-1,
-                             verbosity=0)
-model_xgb_s2.fit(X_train, y_train)
-
-# Make predictions on the validation set with XGBoost
-y_pred_val_xgb_s2 = model_xgb_s2.predict(X_val)
-
-# --- Ensemble Solution 2's predictions ---
-y_pred_val_s2_ensemble = (y_pred_val_lgbm_s2 + y_pred_val_xgb_s2) / 2
-
-# --- Meta-Ensemble the predictions from Solution 1 and Solution 2 ---
-# Simple averaging ensemble of the two solution's final predictions
-y_pred_final_ensemble = (y_pred_val_s1_ensemble + y_pred_val_s2_ensemble) / 2
-
-# Calculate Root Mean Squared Error on the validation set for the final ensembled predictions
-rmse_final_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_final_ensemble))
-
-# Print the final validation performance of the meta-ensemble
-print(f"Final Validation Performance: {rmse_final_ensemble}")
+# Create the submission file
+submission_df = pd.DataFrame({'median_house_value': test_predictions})
+submission_df.to_csv('submission.csv', index=False)

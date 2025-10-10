@@ -13,327 +13,286 @@ from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
+# Imports
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from sklearn.impute import SimpleImputer
-import warnings
 import os
 
-# Suppress LightGBM and XGBoost verbose output in ablation runs
-warnings.filterwarnings("ignore", category=UserWarning, module="lightgbm")
-warnings.filterwarnings("ignore", category=UserWarning, module="xgboost")
-warnings.filterwarnings("ignore", category=FutureWarning, module="xgboost")
+# --- Dummy Data Generation for Reproducibility ---
+# This section ensures the script can run even if the 'input' directory and files are not present.
+# In a real scenario, you would simply ensure your 'input' folder exists with train.csv and test.csv.
+if not os.path.exists("./input"):
+    os.makedirs("./input")
 
-# --- DATA LOADING / MOCK DATA GENERATION ---
-def generate_mock_data(seed=42):
-    np.random.seed(seed)
-    data_size = 2000 # Increased for more robust simulation
-
-# Features (aligned with provided CSV schemas - no 'ocean_proximity')
-    mock_train_data = {
-        'longitude': np.random.uniform(-125, -114, data_size),
-        'latitude': np.random.uniform(32, 42, data_size),
-        'housing_median_age': np.random.randint(1, 50, data_size),
-        'total_rooms': np.random.randint(100, 10000, data_size),
-        'total_bedrooms': np.random.randint(50, 2000, data_size),
-        'population': np.random.randint(100, 50000, data_size),
-        'households': np.random.randint(50, 2000, data_size),
-        'median_income': np.random.uniform(0.5, 15, data_size),
+if not os.path.exists("./input/train.csv"):
+    print("Generating dummy train.csv...")
+    np.random.seed(42)
+    dummy_data = {
+        'longitude': np.random.uniform(-125, -114, 1000),
+        'latitude': np.random.uniform(32, 42, 1000),
+        'housing_median_age': np.random.randint(1, 52, 1000),
+        'total_rooms': np.random.randint(100, 6000, 1000),
+        'total_bedrooms': np.random.randint(50, 1200, 1000),
+        'population': np.random.randint(100, 3000, 1000),
+        'households': np.random.randint(50, 1100, 1000),
+        'median_income': np.random.uniform(0.5, 10, 1000),
+        'median_house_value': np.random.rand(1000) * 500000
     }
+    dummy_df = pd.DataFrame(dummy_data)
+    # Introduce some missing values for total_bedrooms
+    missing_indices = np.random.choice(dummy_df.index, size=50, replace=False)
+    dummy_df.loc[missing_indices, 'total_bedrooms'] = np.nan
+    dummy_df.to_csv("./input/train.csv", index=False)
 
-train_df_mock = pd.DataFrame(mock_train_data)
-
-# Add some NaNs to numerical features for imputation to work on
-    for col in ['total_bedrooms', 'total_rooms']:
-        nan_indices = np.random.choice(data_size, int(data_size * 0.05), replace=False)
-        train_df_mock.loc[nan_indices, col] = np.nan
-
-# Target
-    train_df_mock['median_house_value'] = (
-        10000 * train_df_mock['median_income']
-        + 500 * train_df_mock['housing_median_age']
-        + 100 * train_df_mock['total_rooms'] / (train_df_mock['households'] + 1e-6) # Avoid div by zero
-        + np.random.randn(data_size) * 10000 # Add some noise
-    )
-    train_df_mock['median_house_value'] = np.clip(train_df_mock['median_house_value'], 50000, 500000)
-
-# Test data (similar structure, some NaNs, independent generation)
-    mock_test_data = {
-        'longitude': np.random.uniform(-125, -114, data_size),
-        'latitude': np.random.uniform(32, 42, data_size),
-        'housing_median_age': np.random.randint(1, 50, data_size),
-        'total_rooms': np.random.randint(100, 10000, data_size),
-        'total_bedrooms': np.random.randint(50, 2000, data_size),
-        'population': np.random.randint(100, 50000, data_size),
-        'households': np.random.randint(50, 2000, data_size),
-        'median_income': np.random.uniform(0.5, 15, data_size),
+if not os.path.exists("./input/test.csv"):
+    print("Generating dummy test.csv...")
+    np.random.seed(43)
+    dummy_data_test = {
+        'longitude': np.random.uniform(-125, -114, 200),
+        'latitude': np.random.uniform(32, 42, 200),
+        'housing_median_age': np.random.randint(1, 52, 200),
+        'total_rooms': np.random.randint(100, 6000, 200),
+        'total_bedrooms': np.random.randint(50, 1200, 200),
+        'population': np.random.randint(100, 3000, 200),
+        'households': np.random.randint(50, 1100, 200),
+        'median_income': np.random.uniform(0.5, 10, 200),
     }
-    test_df_mock = pd.DataFrame(mock_test_data)
+    dummy_df_test = pd.DataFrame(dummy_data_test)
+    # Introduce some missing values for total_bedrooms
+    missing_indices_test = np.random.choice(dummy_df_test.index, size=10, replace=False)
+    dummy_df_test.loc[missing_indices_test, 'total_bedrooms'] = np.nan
+    dummy_df_test.to_csv("./input/test.csv", index=False)
 
-# Add some NaNs to numerical features for imputation to work on
-    for col in ['total_bedrooms', 'total_rooms']:
-        nan_indices = np.random.choice(data_size, int(data_size * 0.05), replace=False)
-        test_df_mock.loc[nan_indices, col] = np.nan
+print("Data setup complete. Running ablation study...")
+# --- End of Dummy Data Generation ---
 
-return train_df_mock, test_df_mock
-
-# Function to load data or generate mock data
-def load_or_generate_data(seed=42):
-    train_path = "./input/train.csv"
-    test_path = "./input/test.csv"
-
-if os.path.exists(train_path) and os.path.exists(test_path):
-        print("Loading data from ./input directory...")
-        train_df = pd.read_csv(train_path)
-        test_df = pd.read_csv(test_path)
-        # Ensure test_df does not have median_house_value if loaded from file (it shouldn't based on description)
-        test_df = test_df.drop(columns=['median_house_value'], errors='ignore')
-    else:
-        print("Input files not found. Generating mock data...")
-        train_df, test_df = generate_mock_data(seed)
-    return train_df, test_df
-
-# Store results
-baseline_score = 0
-ablation_1_score = 0
-ablation_2_score = 0
-final_validation_score = 0 # To store the final model's performance for the required print statement
-
-# ==============================================================================
 # ===== BASELINE: Original Code =====
-print("Running Baseline: Original Code with Ensemble and Median Imputation...")
+print("\n===== Running Baseline: Original Code =====")
 
-train_df, test_df = load_or_generate_data(seed=42)
+# Load the training data
+train_df = pd.read_csv("./input/train.csv")
 
-# Separate features and target from training data
-X = train_df.drop("median_house_value", axis=1)
-y = train_df["median_house_value"]
+# Identify features and target
+TARGET = 'median_house_value'
+features = [col for col in train_df.columns if col != TARGET]
 
-# Identify numerical features for imputation
-numerical_features = X.select_dtypes(include=np.number).columns
+# Separate features (X) and target (y)
+X = train_df[features]
+y = train_df[TARGET]
 
-# Impute missing values using median strategy
-# Fit the imputer on the training features, then transform both training features and test data
-imputer = SimpleImputer(strategy='median')
-X_imputed = imputer.fit_transform(X[numerical_features])
-test_df_imputed = imputer.transform(test_df[numerical_features])
+# --- Preprocessing (integrated from both solutions, ensuring consistency) ---
 
-# Convert back to DataFrame, preserving column names
-X[numerical_features] = X_imputed
-test_df[numerical_features] = test_df_imputed
+# Handle missing values: Impute 'total_bedrooms' with the median
+# The base solution specifically handles 'total_bedrooms'.
+# The reference solution handles all missing numerical features with their median.
+# For this dataset, 'total_bedrooms' is the primary one, so we'll use the base's specific handling.
+# Calculate median from the full training features before splitting for consistency.
+median_total_bedrooms_baseline = None
+if 'total_bedrooms' in X.columns:
+    if X['total_bedrooms'].isnull().any():
+        median_total_bedrooms_baseline = X['total_bedrooms'].median()
+        X['total_bedrooms'] = X['total_bedrooms'].fillna(median_total_bedrooms_baseline)
 
-# Split the training data into training and validation sets
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+# Split the data into training and validation sets
+# Using a fixed random_state for reproducibility
+X_train_baseline, X_val_baseline, y_train_baseline, y_val_baseline = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- Model 1: LightGBM ---
-# Initialize and train the LGBMRegressor model
-model_lgbm = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
-model_lgbm.fit(X_train, y_train)
+# --- Model Training ---
 
-# Make predictions on the validation set with LGBM
-y_pred_lgbm_val = model_lgbm.predict(X_val)
+# 1. LightGBM Model (from base solution)
+# print("Training LightGBM model...") # Suppressing internal prints for cleaner ablation output
+lgbm_params_baseline = {
+    'objective': 'regression_l2',
+    'metric': 'rmse',
+    'n_estimators': 1000,
+    'learning_rate': 0.05,
+    'num_leaves': 31,
+    'random_state': 42,
+    'n_jobs': -1,  # Use all available cores
+    'verbose': -1,  # Suppress verbose output
+    'boosting_type': 'gbdt',
+}
+lgbm_model_baseline = lgb.LGBMRegressor(**lgbm_params_baseline)
+lgbm_model_baseline.fit(X_train_baseline, y_train_baseline)
+# print("LightGBM model training complete.")
 
-# --- Model 2: XGBoost ---
-# Initialize and train the XGBRegressor model
-model_xgb = xgb.XGBRegressor(objective='reg:squarederror',
-                             eval_metric='rmse',
-                             random_state=42,
-                             n_jobs=-1,
-                             verbosity=0)  # Suppress verbose output
-model_xgb.fit(X_train, y_train)
+# 2. XGBoost Model (from reference solution)
+# print("Training XGBoost model...")
+xgb_model_baseline = xgb.XGBRegressor(
+    objective='reg:squarederror',  # Objective for regression tasks
+    eval_metric='rmse',            # Evaluation metric is Root Mean Squared Error
+    n_estimators=1000,             # Number of boosting rounds
+    learning_rate=0.05,            # Step size shrinkage to prevent overfitting
+    max_depth=6,                   # Maximum depth of a tree
+    random_state=42,               # For reproducibility
+    n_jobs=-1,                     # Use all available CPU cores - FIXED: Removed quotes
+    verbosity=0                    # Suppress verbose output
+)
+xgb_model_baseline.fit(X_train_baseline, y_train_baseline)
+# print("XGBoost model training complete.")
 
-# Make predictions on the validation set with XGBoost
-y_pred_xgb_val = model_xgb.predict(X_val)
+# --- Prediction and Ensemble ---
 
-# --- Ensemble the predictions ---
-# Simple averaging ensemble
-y_pred_ensemble_val = (y_pred_lgbm_val + y_pred_xgb_val) / 2
-
-# Calculate RMSE on the validation set for the ensembled predictions
-rmse_val_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_ensemble_val))
-
-baseline_score = rmse_val_ensemble
-print(f"Baseline Performance (RMSE): {baseline_score:.4f}")
-final_validation_score = baseline_score # Set the final score to baseline for the required print
-
-# ==============================================================================
-# ===== ABLATION 1: Remove Ensemble (Use only LightGBM) =====
-print("\nRunning Ablation 1: Removing Ensemble (using only LightGBM predictions)...")
-
-train_df_ablation_1, test_df_ablation_1 = load_or_generate_data(seed=42) # Reload data to ensure clean slate for ablation
-
-# Separate features and target from training data
-X_ablation_1 = train_df_ablation_1.drop("median_house_value", axis=1)
-y_ablation_1 = train_df_ablation_1["median_house_value"]
-
-# Identify numerical features for imputation
-numerical_features_ablation_1 = X_ablation_1.select_dtypes(include=np.number).columns
-
-# Impute missing values using median strategy (same as baseline)
-imputer_ablation_1 = SimpleImputer(strategy='median')
-X_ablation_1_imputed = imputer_ablation_1.fit_transform(X_ablation_1[numerical_features_ablation_1])
-test_df_ablation_1_imputed = imputer_ablation_1.transform(test_df_ablation_1[numerical_features_ablation_1])
-
-X_ablation_1[numerical_features_ablation_1] = X_ablation_1_imputed
-test_df_ablation_1[numerical_features_ablation_1] = test_df_ablation_1_imputed
-
-# Split the training data into training and validation sets
-X_train_ablation_1, X_val_ablation_1, y_train_ablation_1, y_val_ablation_1 = train_test_split(X_ablation_1, y_ablation_1, test_size=0.2, random_state=42)
-
-# --- Model 1: LightGBM ---
-# Initialize and train the LGBMRegressor model
-model_lgbm_ablation_1 = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
-model_lgbm_ablation_1.fit(X_train_ablation_1, y_train_ablation_1)
-
-# Make predictions on the validation set with LGBM
-y_pred_lgbm_val_ablation_1 = model_lgbm_ablation_1.predict(X_val_ablation_1)
-
-# --- Model 2: XGBoost --- (Still trained but its predictions won't be used for final score)
-model_xgb_ablation_1 = xgb.XGBRegressor(objective='reg:squarederror',
-                             eval_metric='rmse',
-                             random_state=42,
-                             n_jobs=-1,
-                             verbosity=0)
-model_xgb_ablation_1.fit(X_train_ablation_1, y_train_ablation_1)
-# y_pred_xgb_val = model_xgb.predict(X_val) # Predictions are made but not used for the final metric here
-
-# --- Ablated: No Ensemble, use only LightGBM predictions ---
-y_pred_ablation_1_val = y_pred_lgbm_val_ablation_1 # Use only LGBM predictions
-
-# Calculate RMSE on the validation set for the ablated predictions
-rmse_ablation_1 = np.sqrt(mean_squared_error(y_val_ablation_1, y_pred_ablation_1_val))
-
-ablation_1_score = rmse_ablation_1
-print(f"Ablation 1 Performance (RMSE - Only LightGBM): {ablation_1_score:.4f}")
-
-# ==============================================================================
-# ===== ABLATION 2: Change Imputation Strategy (Median to Mean) =====
-print("\nRunning Ablation 2: Changing Imputation Strategy from Median to Mean...")
-
-train_df_ablation_2, test_df_ablation_2 = load_or_generate_data(seed=42) # Reload data to ensure clean slate for ablation
-
-# Separate features and target from training data
-X_ablation_2 = train_df_ablation_2.drop("median_house_value", axis=1)
-y_ablation_2 = train_df_ablation_2["median_house_value"]
-
-# Identify numerical features for imputation
-numerical_features_ablation_2 = X_ablation_2.select_dtypes(include=np.number).columns
-
-# Impute missing values using MEAN strategy (Ablation: changed from 'median')
-imputer_ablation_2 = SimpleImputer(strategy='mean')
-X_ablation_2_imputed = imputer_ablation_2.fit_transform(X_ablation_2[numerical_features_ablation_2])
-test_df_ablation_2_imputed = imputer_ablation_2.transform(test_df_ablation_2[numerical_features_ablation_2])
-
-X_ablation_2[numerical_features_ablation_2] = X_ablation_2_imputed
-test_df_ablation_2[numerical_features_ablation_2] = test_df_ablation_2_imputed
-
-# Split the training data into training and validation sets
-X_train_ablation_2, X_val_ablation_2, y_train_ablation_2, y_val_ablation_2 = train_test_split(X_ablation_2, y_ablation_2, test_size=0.2, random_state=42)
-
-# --- Model 1: LightGBM ---
-# Initialize and train the LGBMRegressor model
-model_lgbm_ablation_2 = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
-model_lgbm_ablation_2.fit(X_train_ablation_2, y_train_ablation_2)
-
-# Make predictions on the validation set with LGBM
-y_pred_lgbm_val_ablation_2 = model_lgbm_ablation_2.predict(X_val_ablation_2)
-
-# --- Model 2: XGBoost ---
-# Initialize and train the XGBRegressor model
-model_xgb_ablation_2 = xgb.XGBRegressor(objective='reg:squarederror',
-                             eval_metric='rmse',
-                             random_state=42,
-                             n_jobs=-1,
-                             verbosity=0)
-model_xgb_ablation_2.fit(X_train_ablation_2, y_train_ablation_2)
+# Make predictions on the validation set with LightGBM
+y_pred_val_lgbm_baseline = lgbm_model_baseline.predict(X_val_baseline)
 
 # Make predictions on the validation set with XGBoost
-y_pred_xgb_val_ablation_2 = model_xgb_ablation_2.predict(X_val_ablation_2)
+y_pred_val_xgb_baseline = xgb_model_baseline.predict(X_val_baseline)
 
-# --- Ensemble the predictions (same as baseline) ---
-y_pred_ensemble_ablation_2_val = (y_pred_lgbm_val_ablation_2 + y_pred_xgb_val_ablation_2) / 2
+# Ensemble the predictions by averaging (simple average ensemble)
+y_pred_val_ensemble_baseline = (y_pred_val_lgbm_baseline + y_pred_val_xgb_baseline) / 2
 
-# Calculate RMSE on the validation set for the ensembled predictions
-rmse_ablation_2 = np.sqrt(mean_squared_error(y_val_ablation_2, y_pred_ensemble_ablation_2_val))
+# --- Evaluation ---
 
-ablation_2_score = rmse_ablation_2
-print(f"Ablation 2 Performance (RMSE - Mean Imputation): {ablation_2_score:.4f}")
+# Evaluate the ensembled model using Root Mean Squared Error (RMSE)
+rmse_baseline = np.sqrt(mean_squared_error(y_val_baseline, y_pred_val_ensemble_baseline))
 
-# ==============================================================================
+# Print the final validation performance
+print(f'Baseline Performance (RMSE): {rmse_baseline:.4f}')
+
+# The rest of the original code for test data prediction is not strictly needed for ablation study performance comparison
+# as we are focusing on validation set performance, but including for completeness if it were critical.
+# For this study, we only need the validation RMSE.
+
+# ===== ABLATION 1: Impute 'total_bedrooms' with 0 instead of Median =====
+print("\n===== Running Ablation 1: Impute 'total_bedrooms' with 0 =====")
+
+# Load the training data
+train_df_ablation1 = pd.read_csv("./input/train.csv")
+
+# Identify features and target
+TARGET = 'median_house_value'
+features = [col for col in train_df_ablation1.columns if col != TARGET]
+
+# Separate features (X) and target (y)
+X_ablation1 = train_df_ablation1[features].copy()  # Use .copy() to avoid SettingWithCopyWarning
+y_ablation1 = train_df_ablation1[TARGET].copy()
+
+# --- Preprocessing (modified for ablation) ---
+
+# Handle missing values: Impute 'total_bedrooms' with 0
+median_total_bedrooms_ablation1 = None  # Not used in this ablation, but kept for structural consistency
+if 'total_bedrooms' in X_ablation1.columns:
+    if X_ablation1['total_bedrooms'].isnull().any():
+        # ABLATION CHANGE: Fill with 0 instead of median
+        X_ablation1['total_bedrooms'] = X_ablation1['total_bedrooms'].fillna(0)
+
+# Split the data into training and validation sets
+X_train_ablation1, X_val_ablation1, y_train_ablation1, y_val_ablation1 = train_test_split(X_ablation1, y_ablation1, test_size=0.2, random_state=42)
+
+# --- Model Training ---
+
+# 1. LightGBM Model
+lgbm_params_ablation1 = {
+    'objective': 'regression_l2', 'metric': 'rmse', 'n_estimators': 1000,
+    'learning_rate': 0.05, 'num_leaves': 31, 'random_state': 42, 'n_jobs': -1, 'verbose': -1, 'boosting_type': 'gbdt',
+}
+lgbm_model_ablation1 = lgb.LGBMRegressor(**lgbm_params_ablation1)
+lgbm_model_ablation1.fit(X_train_ablation1, y_train_ablation1)
+
+# 2. XGBoost Model
+xgb_model_ablation1 = xgb.XGBRegressor(
+    objective='reg:squarederror', eval_metric='rmse', n_estimators=1000,
+    learning_rate=0.05, max_depth=6, random_state=42, n_jobs=-1, verbosity=0  # Fixed: Removed quotes
+)
+xgb_model_ablation1.fit(X_train_ablation1, y_train_ablation1)
+
+# --- Prediction and Ensemble ---
+y_pred_val_lgbm_ablation1 = lgbm_model_ablation1.predict(X_val_ablation1)
+y_pred_val_xgb_ablation1 = xgb_model_ablation1.predict(X_val_ablation1)
+y_pred_val_ensemble_ablation1 = (y_pred_val_lgbm_ablation1 + y_pred_val_xgb_ablation1) / 2
+
+# --- Evaluation ---
+rmse_ablation1 = np.sqrt(mean_squared_error(y_val_ablation1, y_pred_val_ensemble_ablation1))
+print(f'Ablation 1 Performance (RMSE): {rmse_ablation1:.4f}')
+
+# ===== ABLATION 2: Remove XGBoost from Ensemble (use only LightGBM) =====
+print("\n===== Running Ablation 2: Remove XGBoost from Ensemble =====")
+
+# Load the training data
+train_df_ablation2 = pd.read_csv("./input/train.csv")
+
+# Identify features and target
+TARGET = 'median_house_value'
+features = [col for col in train_df_ablation2.columns if col != TARGET]
+
+# Separate features (X) and target (y)
+X_ablation2 = train_df_ablation2[features].copy()
+y_ablation2 = train_df_ablation2[TARGET].copy()
+
+# --- Preprocessing (same as baseline) ---
+
+# Handle missing values: Impute 'total_bedrooms' with the median
+median_total_bedrooms_ablation2 = None
+if 'total_bedrooms' in X_ablation2.columns:
+    if X_ablation2['total_bedrooms'].isnull().any():
+        median_total_bedrooms_ablation2 = X_ablation2['total_bedrooms'].median()
+        X_ablation2['total_bedrooms'] = X_ablation2['total_bedrooms'].fillna(median_total_bedrooms_ablation2)
+
+# Split the data into training and validation sets
+X_train_ablation2, X_val_ablation2, y_train_ablation2, y_val_ablation2 = train_test_split(X_ablation2, y_ablation2, test_size=0.2, random_state=42)
+
+# --- Model Training ---
+
+# 1. LightGBM Model (same as baseline)
+lgbm_params_ablation2 = {
+    'objective': 'regression_l2', 'metric': 'rmse', 'n_estimators': 1000,
+    'learning_rate': 0.05, 'num_leaves': 31, 'random_state': 42, 'n_jobs': -1, 'verbose': -1, 'boosting_type': 'gbdt',
+}
+lgbm_model_ablation2 = lgb.LGBMRegressor(**lgbm_params_ablation2)
+lgbm_model_ablation2.fit(X_train_ablation2, y_train_ablation2)
+
+# 2. XGBoost Model (still trained, but its predictions won't be used in the ensemble)
+xgb_model_ablation2 = xgb.XGBRegressor(
+    objective='reg:squarederror', eval_metric='rmse', n_estimators=1000,
+    learning_rate=0.05, max_depth=6, random_state=42, n_jobs=-1, verbosity=0  # Fixed: Removed quotes
+)
+xgb_model_ablation2.fit(X_train_ablation2, y_train_ablation2)
+
+# --- Prediction and Ensemble (modified for ablation) ---
+
+# Make predictions on the validation set with LightGBM
+y_pred_val_lgbm_ablation2 = lgbm_model_ablation2.predict(X_val_ablation2)
+
+# Make predictions on the validation set with XGBoost (will not be used for final ensemble here)
+# y_pred_val_xgb_ablation2 = xgb_model_ablation2.predict(X_val_ablation2) # This line is functionally commented out by not being used
+
+# ABLATION CHANGE: Ensemble using only LightGBM predictions
+y_pred_val_ensemble_ablation2 = y_pred_val_lgbm_ablation2
+
+# --- Evaluation ---
+rmse_ablation2 = np.sqrt(mean_squared_error(y_val_ablation2, y_pred_val_ensemble_ablation2))
+print(f'Ablation 2 Performance (RMSE): {rmse_ablation2:.4f}')
+
 # ===== SUMMARY =====
 print("\n===== ABLATION STUDY SUMMARY =====")
 ablations = [
-    ("Baseline (Ensemble + Median Imputation)", baseline_score),
-    ("Ablation 1 (Only LightGBM)", ablation_1_score),
-    ("Ablation 2 (Mean Imputation)", ablation_2_score),
+    ("Baseline", rmse_baseline),
+    ("Ablation 1: 'total_bedrooms' imputed with 0", rmse_ablation1),
+    ("Ablation 2: Only LightGBM (No XGBoost Ensemble)", rmse_ablation2),
 ]
 
-print("--- Performance (Lower RMSE is Better) ---")
+print("\n--- Performance Results ---")
 for name, score in ablations:
-    print(f"- {name}: {score:.4f}")
+    print(f"{name}: RMSE = {score:.4f}")
 
-print("\n--- Impact Analysis (Absolute Change from Baseline) ---")
 deltas = []
-for name, score in ablations[1:]: # Exclude baseline from delta calculation
-    delta = abs(score - baseline_score)
+for name, score in ablations[1:]:  # Start from the first ablation, skip baseline
+    delta = abs(score - rmse_baseline)
     deltas.append((name, delta))
-    print(f"- {name}: Delta from Baseline = {delta:.4f}")
+    print(f"Change from Baseline for '{name}': {delta:.4f}")
 
 if deltas:
     most_impactful = max(deltas, key=lambda x: x[1])
-    print(f"\nMost impactful component ablation: '{most_impactful[0]}' (changed performance by {most_impactful[1]:.4f} RMSE).")
+    print(f"\nConclusion: The component whose ablation resulted in the largest change in performance is: '{most_impactful[0]}'")
+    print(f"This change had a delta RMSE of: {most_impactful[1]:.4f}")
 else:
-    print("\nNo ablations performed to compare.")
+    print("\nNo ablations performed to compare against baseline.")
 
-print(f"Final Validation Performance: {final_validation_score}")
-
-# ==============================================================================
-# ===== FINAL PREDICTION FOR SUBMISSION =====
-print("\nGenerating final predictions for submission using the Baseline Ensemble Model...")
-
-# Load fresh data for final training to ensure no data leakage or state issues from ablations
-final_train_df, final_test_df = load_or_generate_data(seed=42)
-
-# Separate features and target from training data
-X_final = final_train_df.drop("median_house_value", axis=1)
-y_final = final_train_df["median_house_value"]
-
-# Identify numerical features for imputation
-numerical_features_final = X_final.select_dtypes(include=np.number).columns
-
-# Impute missing values using median strategy (as chosen for baseline)
-final_imputer = SimpleImputer(strategy='median')
-X_final_imputed = final_imputer.fit_transform(X_final[numerical_features_final])
-final_test_df_imputed = final_imputer.transform(final_test_df[numerical_features_final])
-
-X_final[numerical_features_final] = X_final_imputed
-final_test_df[numerical_features_final] = final_test_df_imputed
-
-# --- Retrain Model 1: LightGBM on FULL training data ---
-final_model_lgbm = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
-final_model_lgbm.fit(X_final, y_final)
-
-# --- Retrain Model 2: XGBoost on FULL training data ---
-final_model_xgb = xgb.XGBRegressor(objective='reg:squarederror',
-                             eval_metric='rmse',
-                             random_state=42,
-                             n_jobs=-1,
-                             verbosity=0)
-final_model_xgb.fit(X_final, y_final)
-
-# Make predictions on the final test set with both models
-test_predictions_lgbm = final_model_lgbm.predict(final_test_df)
-test_predictions_xgb = final_model_xgb.predict(final_test_df)
-
-# Ensemble the predictions for the final submission
-final_test_predictions = (test_predictions_lgbm + test_predictions_xgb) / 2
-
-# Create submission file
-submission_df = pd.DataFrame({'median_house_value': final_test_predictions})
-submission_df.to_csv('submission.csv', index=False)
-
-print("Submission file 'submission.csv' created successfully.")
+# Final Validation Performance output as requested
+final_validation_score = rmse_baseline  # The baseline performance is typically the one to report if not specified otherwise
+print(f'Final Validation Performance: {final_validation_score}')

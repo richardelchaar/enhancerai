@@ -22,9 +22,13 @@ If you truly have no historical runs, acknowledge that. Otherwise, you **must** 
 3. Define strategic goals for the downstream agents. Each goal should have a unique priority (1 = highest) so planners can order their work.
 
 # Valid Target Agent Phases
-- **"refinement"**: For feature engineering, hyperparameter tuning, model architecture changes, cross-validation, regularization
-- **"ensemble"**: For model combination strategies (stacking, weighted averaging, blending)
+- **"refinement"**: For feature engineering, hyperparameter tuning, model selection (traditional ML only), cross-validation, regularization
+- **"ensemble"**: For model combination strategies (stacking, weighted averaging, blending) using traditional ML models
 - **"submission"**: For final prediction generation and submission file creation
+
+**CRITICAL CONSTRAINT:**
+- **ONLY suggest traditional ML algorithms**: LightGBM, XGBoost, CatBoost, RandomForest, Ridge, Lasso, ElasticNet, GradientBoosting, etc.
+- **DO NOT suggest neural networks, deep learning, PyTorch, TensorFlow, Keras, or any neural architecture**
 
 **Important:** Use "refinement" for all model optimization tasks including hyperparameter tuning (e.g., RandomizedSearchCV, GridSearchCV, Bayesian optimization).
 

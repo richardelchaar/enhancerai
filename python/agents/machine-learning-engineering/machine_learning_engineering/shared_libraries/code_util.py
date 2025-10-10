@@ -4,6 +4,7 @@ from typing import Any, Optional
 import subprocess
 import os
 import time
+import autopep8
 
 from google.adk.agents import callback_context as callback_context_module
 
@@ -54,6 +55,43 @@ warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
 """
     
+    # FIX: Apply autopep8 to fix indentation errors before execution
+    # This is critical for ablation scripts where LLMs often generate inconsistent indentation
+    try:
+        code_text = autopep8.fix_code(
+            code_text,
+            options={
+                'aggressive': 2,  # Level 2 aggressive fixes for indentation
+                'max_line_length': 200,  # Allow longer lines (ML code often has long params)
+            }
+        )
+    except Exception as e:
+        # If autopep8 fails, continue with original code and log warning
+        print(f"Warning: autopep8 formatting failed: {e}. Using original code.")
+
+    # NEW: Validate syntax before execution to catch indentation errors early
+    # This gives better error messages to the debug loop
+    try:
+        compile(code_text, '<string>', 'exec')
+    except SyntaxError as e:
+        # Syntax error detected - return it immediately so debug loop can fix it
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"SyntaxError before execution: {e}\nLine {e.lineno}: {e.text}\n{e.msg}",
+            "execution_time": 0.0,
+            "score": float("inf") if run_cwd else 0  # Need to infer from context
+        }
+    except IndentationError as e:
+        # Indentation error detected - return it immediately
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"IndentationError before execution: {e}\nLine {e.lineno}: {e.text}\n{e.msg}\nPlease check that all lines use consistent 4-space indentation.",
+            "execution_time": 0.0,
+            "score": float("inf") if run_cwd else 0
+        }
+
     enhanced_code = suppression_code + code_text
     
     with open(output_filepath, "w", encoding="utf-8") as f:

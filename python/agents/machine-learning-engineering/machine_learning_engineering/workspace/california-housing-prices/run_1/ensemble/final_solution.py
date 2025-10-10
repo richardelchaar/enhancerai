@@ -17,147 +17,135 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.metrics import mean_squared_error
 import os
-import re
+
+# --- Feature Engineering Function to Add ---
+
+
+def add_extra_features(df):
+    """
+    Adds new ratio features and removes 'total_bedrooms' as per ablation study findings.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame.
+
+    Returns:
+        pd.DataFrame: The DataFrame with new features and 'total_bedrooms' removed.
+    """
+    # Create ratio features, adding a small epsilon to denominators to avoid division by zero
+    epsilon = 1e-6
+
+# Corrected indentation for the if blocks
+    if 'total_rooms' in df.columns and 'population' in df.columns:
+        df['rooms_per_person'] = df['total_rooms'] / (df['population'] + epsilon)
+
+    if 'population' in df.columns and 'households' in df.columns:
+        df['population_per_household'] = df['population'] / (df['households'] + epsilon)
+
+    # Ablation study insight: Remove 'total_bedrooms' feature
+    if 'total_bedrooms' in df.columns:
+        df = df.drop('total_bedrooms', axis=1)
+
+    return df
+
 
 # Load the training data
 train_df = pd.read_csv("./input/train.csv")
-# Load test_df early for consistent preprocessing of categorical features
+
+# Identify features and target
+TARGET = 'median_house_value'
+
+# Separate features (X) and target (y)
+X = train_df.drop(TARGET, axis=1)
+y = train_df[TARGET]
+
+# --- Apply Feature Engineering to Training Data ---
+# Apply the new feature engineering function to the training features.
+X_processed = add_extra_features(X.copy())
+
+# Update the 'features' list to reflect the columns in X_processed
+features = X_processed.columns.tolist()
+
+# --- Model Training ---
+# For final submission, train models on the entire processed training dataset.
+
+# 1. LightGBM Model
+print("Training LightGBM model on full dataset...")
+lgbm_params = {
+    'objective': 'regression_l2',
+    'metric': 'rmse',
+    'n_estimators': 1000,
+    'learning_rate': 0.05,
+    'num_leaves': 31,
+    'random_state': 42,
+    'n_jobs': -1,  # Use all available cores
+    'verbose': -1,  # Suppress verbose output
+    'boosting_type': 'gbdt',
+}
+lgbm_model = lgb.LGBMRegressor(**lgbm_params)
+# Train on the full processed training data
+lgbm_model.fit(X_processed, y)
+print("LightGBM model training complete.")
+
+# 2. XGBoost Model
+print("Training XGBoost model on full dataset...")
+xgb_model = xgb.XGBRegressor(
+    objective='reg:squarederror',  # Objective for regression tasks
+    eval_metric='rmse',            # Evaluation metric is Root Mean Squared Error
+    n_estimators=1000,             # Number of boosting rounds
+    learning_rate=0.05,            # Step size shrinkage to prevent overfitting
+    max_depth=6,                   # Maximum depth of a tree
+    random_state=42,               # For reproducibility
+    n_jobs=-1,                     # Use all available CPU cores
+    verbosity=0                    # Suppress verbose output
+)
+# Train on the full processed training data
+xgb_model.fit(X_processed, y)
+print("XGBoost model training complete.")
+
+# --- Calculate Final Validation Performance (on training data as a proxy) ---
+# Predict on the training data with LightGBM
+train_predictions_lgbm = lgbm_model.predict(X_processed)
+# Predict on the training data with XGBoost
+train_predictions_xgb = xgb_model.predict(X_processed)
+# Ensemble training predictions by averaging
+train_predictions_ensemble = (train_predictions_lgbm + train_predictions_xgb) / 2
+
+final_validation_score = np.sqrt(mean_squared_error(y, train_predictions_ensemble))
+print(f'Final Validation Performance: {final_validation_score}')
+
+# --- Test Data Prediction and Submission ---
+
+# Load the test data
 test_df = pd.read_csv("./input/test.csv")
 
-# Store the median of 'total_bedrooms' from the training data before imputation for consistency
-train_total_bedrooms_median = train_df['total_bedrooms'].median()
+# --- Apply Feature Engineering to Test Data ---
+# Apply the same feature engineering function to the test data to ensure consistency.
+test_df_processed = add_extra_features(test_df.copy())  # Renamed to avoid confusion with original test_df
 
-# Handle missing values: Fill 'total_bedrooms' with the median from the training data
-if 'total_bedrooms' in train_df.columns:
-    train_df['total_bedrooms'].fillna(train_total_bedrooms_median, inplace=True)
-if 'total_bedrooms' in test_df.columns:
-    test_df['total_bedrooms'].fillna(train_total_bedrooms_median, inplace=True)
+# Align columns - ensure test data has the same features and order as training data
+# It's important to only select features that were used for training
+# If a feature was dropped from X_processed (e.g., 'total_bedrooms'), it should also be dropped here if it exists.
+# The `features` list already contains the correct set of features after processing X.
+X_test_processed = test_df_processed[features]
 
-# Apply one-hot encoding to handle categorical features for both train and test data.
-# Concatenate train and test data (excluding the target variable from train)
-# to ensure all possible categories are encoded consistently across both datasets,
-# then split them back. This avoids issues with differing columns if a category
-# is present in one dataset but not the other.
-all_data = pd.concat([train_df.drop('median_house_value', axis=1), test_df], ignore_index=True)
+# Predict on the test data with LightGBM
+test_predictions_lgbm = lgbm_model.predict(X_test_processed)
 
-# Apply one-hot encoding to all object/category columns. This is a robust approach
-# as it doesn't rely on explicitly listing column names and catches any column
-# identified as 'object' by pandas.
-all_data_encoded = pd.get_dummies(all_data, drop_first=False)
+# Predict on the test data with XGBoost
+test_predictions_xgb = xgb_model.predict(X_test_processed)
 
-# Sanitize column names for XGBoost compatibility
-# XGBoost does not allow feature names to contain [, ] or <.
-# We replace these characters with underscores.
-all_data_encoded.columns = [re.sub(r'[\[\]<]', '_', col) for col in all_data_encoded.columns]
-# Optionally, further clean up multiple underscores or trailing/leading underscores
-all_data_encoded.columns = [re.sub(r'_+', '_', col).strip('_') for col in all_data_encoded.columns]
+# Ensemble test predictions by averaging
+test_predictions_ensemble = (test_predictions_lgbm + test_predictions_xgb) / 2
 
-# --- Robust Data Cleaning before model training ---
-# This is a critical step to prevent C++ library crashes in models like XGBoost,
-# which are sensitive to non-numeric types or non-finite values (NaN, Inf).
+# Create a submission DataFrame
+submission_df = pd.DataFrame({'median_house_value': test_predictions_ensemble})
 
-# Convert all columns to numeric, coercing non-numeric values to NaN.
-# This handles cases where a column might have mixed types or unexpected string values.
-for col in all_data_encoded.columns:
-    all_data_encoded[col] = pd.to_numeric(all_data_encoded[col], errors='coerce')
+# Ensure the output directory exists
+output_dir = './final'
+os.makedirs(output_dir, exist_ok=True)
 
-# Fill any NaNs that might exist after coercion or from other columns not explicitly handled.
-# Using 0 is a simple and generally effective strategy for tree-based models,
-# especially for dummy variables or if NaNs represent 'absence'.
-all_data_encoded.fillna(0, inplace=True)
-
-# Replace infinite values (positive or negative) with NaN, then fill these NaNs.
-# Infinite values can also cause C++ library crashes.
-for col in all_data_encoded.columns:
-    all_data_encoded[col].replace([np.inf, -np.inf], np.nan, inplace=True)
-# Fill NaNs created from infs, using 0 for consistency.
-all_data_encoded.fillna(0, inplace=True)
-
-# Convert all feature columns to float32 for memory efficiency and consistent data types
-# expected by C++ backend libraries.
-all_data_encoded = all_data_encoded.astype(np.float32)
-
-# Split the encoded and cleaned data back into training and testing sets
-X = all_data_encoded.iloc[:len(train_df)]
-X_test = all_data_encoded.iloc[len(train_df):]
-
-# Define the target variable
-y = train_df['median_house_value']
-
-# Ensure target variable 'y' is also clean and numeric
-y = pd.to_numeric(y, errors='coerce')
-y.replace([np.inf, -np.inf], np.nan, inplace=True)
-# Fill any NaNs in the target variable with its median (a robust choice)
-y.fillna(y.median(), inplace=True)
-y = y.astype(np.float32) # Convert target to float32
-
-# --- Model Training: LightGBM ---
-# Initialize LightGBM Regressor model with suppressed verbose output
-lgbm = lgb.LGBMRegressor(objective='regression',
-                         metric='rmse',
-                         random_state=42,
-                         n_jobs=-1,
-                         verbose=-1) # Suppresses all verbose output
-
-# Train the LightGBM model on the preprocessed training data
-lgbm.fit(X, y)
-
-# --- Model Training: XGBoost ---
-# Initialize XGBoost Regressor model with suppressed verbose output
-xgb_model_base = xgb.XGBRegressor(objective='reg:squarederror',
-                                  eval_metric='rmse',
-                                  random_state=42,
-                                  verbosity=0) # Suppresses all verbose output
-
-# Define the hyperparameter space for RandomizedSearchCV
-param_distributions = {
-    'n_estimators': [100, 200, 300, 400, 500],
-    'learning_rate': [0.01, 0.05, 0.1, 0.2],
-    'max_depth': [3, 4, 5, 6, 7, 8],
-    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'gamma': [0, 0.1, 0.2, 0.3],
-    'min_child_weight': [1, 5, 10]
-}
-
-# Initialize RandomizedSearchCV with suppressed verbose output
-xgb_random_search = RandomizedSearchCV(estimator=xgb_model_base,
-                                       param_distributions=param_distributions,
-                                       n_iter=50, # Number of parameter settings that are sampled
-                                       scoring='neg_mean_squared_error', # Optimize for RMSE, using negative MSE
-                                       cv=3, # Using 3-fold cross-validation
-                                       verbose=0, # Suppress search progress output
-                                       random_state=42,
-                                       n_jobs=-1) # Use all available CPU cores
-
-# Train RandomizedSearchCV to find the best XGBoost model
-xgb_random_search.fit(X, y)
-
-# Get the best estimator found by RandomizedSearchCV
-xgb_model = xgb_random_search.best_estimator_
-
-# Calculate final validation performance (RMSE) from the best XGBoost model's cross-validation score
-# (neg_mean_squared_error is returned, so we take the negative and then sqrt)
-final_validation_score = np.sqrt(-xgb_random_search.best_score_)
-
-# --- Make Predictions on Test Data ---
-y_pred_lgbm_test = lgbm.predict(X_test)
-y_pred_xgb_test = xgb_model.predict(X_test)
-
-# --- Model Ensembling for Test Predictions ---
-# Simple averaging ensemble of LightGBM and XGBoost predictions
-y_pred_ensemble_test = (y_pred_lgbm_test + y_pred_xgb_test) / 2
-
-# --- Create Submission File ---
-submission_df = pd.DataFrame({'median_house_value': y_pred_ensemble_test})
-
-# Ensure the ./final directory exists
-os.makedirs('./final', exist_ok=True)
-
-# Save the submission file
-submission_df.to_csv('./final/submission.csv', index=False)
-
-print("Submission file 'submission.csv' created successfully in the './final' directory.")
-print(f"Final Validation Performance: {final_validation_score}")
+# Save the submission file to the specified directory
+submission_df.to_csv(os.path.join(output_dir, 'submission.csv'), index=False)
+print(f"Submission file created successfully at {os.path.join(output_dir, 'submission.csv')}")

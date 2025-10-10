@@ -27,7 +27,7 @@ class DefaultConfig:
     max_retry: int = 6  # Reduced to prevent token explosion
     max_debug_round: int = 6  # Reduced to prevent token explosion  
     max_rollback_round: int = 2  # Reduced to prevent token explosion
-    inner_loop_round: int = 1  # Changed from higher value to 1 for faster baseline
+    inner_loop_round: int = 3  # Changed to 3 to execute full multi-step refinement plans
     outer_loop_round: int = 1  # Changed from higher value to 1 for faster baseline
     ensemble_loop_round: int = 1 # Changed from higher value to 1 for faster baseline
     num_top_plans: int = 2

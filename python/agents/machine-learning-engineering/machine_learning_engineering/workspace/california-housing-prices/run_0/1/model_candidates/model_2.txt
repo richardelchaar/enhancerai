@@ -1,37 +1,29 @@
 ## Model name
-CatBoost Regressor
+XGBoost Regressor
 
 ## Example Python code
-import numpy as np
-import pandas as pd
+import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from catboost import CatBoostRegressor
+from sklearn.datasets import make_regression
+import numpy as np
 
-# Generate synthetic data for regression
-X = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])
-y = pd.Series(np.random.rand(1000) * 100 + 5 * X.sum(axis=1))
-
-# For demonstration, let's add a categorical feature
-X['categorical_feature'] = np.random.choice(['A', 'B', 'C'], size=1000)
+# Generate synthetic data for demonstration (consistent with LightGBM example)
+X, y = make_regression(n_samples=1000, n_features=10, n_informative=5, random_state=42)
 
 # Split data into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Identify categorical features for CatBoost
-categorical_features_indices = np.where(X.dtypes == 'object')[0]
+# Initialize XGBoost Regressor model
+# objective 'reg:squarederror' is standard for regression with L2 loss
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42)
 
-# Initialize CatBoost Regressor
-# 'loss_function': 'RMSE' is explicitly set for the competition metric.
-# 'iterations' (n_estimators) can be tuned.
-model_catboost = CatBoostRegressor(loss_function='RMSE', iterations=100, random_state=42, verbose=0)
-
-# Train the model, specifying categorical features
-model_catboost.fit(X_train, y_train, cat_features=categorical_features_indices)
+# Train the model
+xgb_model.fit(X_train, y_train)
 
 # Make predictions on the test set
-y_pred_catboost = model_catboost.predict(X_test)
+y_pred_xgb = xgb_model.predict(X_test)
 
-# Calculate RMSE
-rmse_catboost = np.sqrt(mean_squared_error(y_test, y_pred_catboost))
-print(f"CatBoost RMSE: {rmse_catboost:.4f}")
+# Evaluate the model using RMSE
+rmse_xgb = np.sqrt(mean_squared_error(y_test, y_pred_xgb))
+print(f"XGBoost RMSE: {rmse_xgb:.4f}")
