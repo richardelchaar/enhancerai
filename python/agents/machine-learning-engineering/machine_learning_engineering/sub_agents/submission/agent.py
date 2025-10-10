@@ -56,7 +56,26 @@ def get_submission_and_debug_agent_instruction(
             best_score = curr_score
 
     for task_id in range(1, num_solutions + 1):
-        # use the last completed refinement step for this task if available
+        # CRITICAL FIX: Check if this is a refinement run - improved code has different state keys
+        is_refinement_run = context.state.get("is_refinement_run", False)
+        
+        if is_refinement_run:
+            # In refinement runs (Run 1+), check the improved iterations
+            # Code is stored as train_code_improve_{inner_iter}_{task_id}
+            inner_loop_round = context.state.get("inner_loop_round", 3)
+            for inner_iter in range(inner_loop_round, -1, -1):
+                curr_code = context.state.get(
+                    f"train_code_improve_{inner_iter}_{task_id}", ""
+                )
+                curr_exec_result = context.state.get(
+                    f"train_code_improve_exec_result_{inner_iter}_{task_id}", {}
+                )
+                consider_candidate(curr_code, curr_exec_result)
+                # once we find a valid score, stop
+                if isinstance(curr_exec_result, dict) and curr_exec_result.get("score") is not None:
+                    break
+        
+        # Also check base refinement steps (for Run 0 or fallback)
         last_step = context.state.get(f"refine_step_{task_id}", 0)
         for step in range(last_step, -1, -1):
             curr_code = context.state.get(

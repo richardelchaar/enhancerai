@@ -1,0 +1,80 @@
+
+# Suppress verbose model output to prevent token explosion
+import warnings
+warnings.filterwarnings('ignore')
+import os
+os.environ['PYTHONWARNINGS'] = 'ignore'
+# Suppress LightGBM verbosity
+os.environ['LIGHTGBM_VERBOSITY'] = '-1'
+# Suppress XGBoost verbosity  
+os.environ['XGBOOST_VERBOSITY'] = '0'
+# Suppress sklearn warnings
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
+warnings.filterwarnings('ignore', category=ConvergenceWarning)
+
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import os
+
+# Load the datasets
+# As per instructions, assume files are in './input' and do not use try/except.
+train_df = pd.read_csv("./input/train.csv")
+test_df = pd.read_csv("./input/test.csv")
+
+# Separate target variable from features
+X = train_df.drop("median_house_value", axis=1)
+y = train_df["median_house_value"]
+
+# --- Preprocessing ---
+# Handle missing values
+# Impute missing values with the median of the column from the training data.
+# This ensures consistency between training and test set imputation.
+for col in X.columns:
+    if X[col].isnull().any():
+        median_val = X[col].median()  # Calculate median from training data
+        X[col].fillna(median_val, inplace=True)
+        # Apply the same imputation to the test set using the training set's median
+        if col in test_df.columns:
+            test_df[col].fillna(median_val, inplace=True)
+
+# --- Model Training and Prediction ---
+
+# Train models on the full training dataset (X, y) as per instructions.
+
+# 1. LightGBM Model
+# Initialize LightGBM Regressor model
+lgbm_model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, verbose=-1)
+# Train the LightGBM model on the full training data
+lgbm_model.fit(X, y)
+
+# 2. XGBoost Model
+# Initialize XGBoost Regressor model
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42, verbosity=0, n_estimators=1000)
+# Train the XGBoost model on the full training data
+xgb_model.fit(X, y)
+
+# --- Make predictions on the test set ---
+# Make predictions on the test set using both models
+y_pred_lgbm_test = lgbm_model.predict(test_df)
+y_pred_xgb_test = xgb_model.predict(test_df)
+
+# --- Ensembling ---
+# Simple average ensemble of the two models' predictions for the test set
+y_pred_ensemble_test = (y_pred_lgbm_test + y_pred_xgb_test) / 2
+
+# --- Create Submission File ---
+# Ensure the output directory exists
+os.makedirs('./final', exist_ok=True)
+
+# Create submission DataFrame
+submission_df = pd.DataFrame({'median_house_value': y_pred_ensemble_test})
+
+# Save the submission file to the specified path
+submission_df.to_csv('./final/submission.csv', index=False)
+
+print("Submission file created successfully at ./final/submission.csv")

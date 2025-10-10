@@ -13,28 +13,14 @@ from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
-# Suppress verbose model output to prevent token explosion
-from sklearn.metrics.pairwise import euclidean_distances
-from sklearn.cluster import KMeans
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-import xgboost as xgb
-import lightgbm as lgb
-import numpy as np
 import pandas as pd
-from sklearn.exceptions import ConvergenceWarning
-from sklearn.utils._testing import ignore_warnings
-import os
-import warnings
-warnings.filterwarnings('ignore')
-os.environ['PYTHONWARNINGS'] = 'ignore'
-# Suppress LightGBM verbosity
-os.environ['LIGHTGBM_VERBOSITY'] = '-1'
-# Suppress XGBoost verbosity
-os.environ['XGBOOST_VERBOSITY'] = '0'
-# Suppress sklearn warnings
-warnings.filterwarnings('ignore', category=ConvergenceWarning)
-
+import numpy as np
+import lightgbm as lgb
+import xgboost as xgb
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.metrics import mean_squared_error
+from sklearn.cluster import MiniBatchKMeans
+from scipy.stats import uniform, randint
 
 # Load the datasets
 # As per instructions, assume files are in './input' and do not use try/except.
@@ -57,118 +43,112 @@ for col in X.columns:
         if col in test_df.columns:
             test_df[col].fillna(median_val, inplace=True)
 
-# --- Geographic Feature Engineering ---
-# (1) KMeans clustering for latitude and longitude
-for k in [5, 10, 20]:
-    kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
+# --- Feature Engineering (from Run 1) ---
+# Combine X and test_df for consistent feature engineering
+# Store original shapes to split back later
+X_shape = X.shape[0]
+combined_df = pd.concat([X, test_df], ignore_index=True)
 
-# Fit KMeans on training data's latitude and longitude
-    X_coords = X[['latitude', 'longitude']]
-    kmeans.fit(X_coords)
+# 1. Geographic Clustering (KMeans)
+# Use MiniBatchKMeans for efficiency
+kmeans = MiniBatchKMeans(n_clusters=10, random_state=42, n_init=10, batch_size=256)
+combined_df['geo_cluster_k'] = kmeans.fit_predict(combined_df[['latitude', 'longitude']])
 
-# Predict cluster IDs for both training and test data
-    X[f'geo_cluster_{k}'] = kmeans.predict(X_coords)
-    test_df[f'geo_cluster_{k}'] = kmeans.predict(test_df[['latitude', 'longitude']])
+# Calculate distance to cluster centroids
+for i in range(kmeans.n_clusters):
+    combined_df[f'distance_to_cluster_{i}'] = np.sqrt(
+        (combined_df['latitude'] - kmeans.cluster_centers_[i, 0])**2 +
+        (combined_df['longitude'] - kmeans.cluster_centers_[i, 1])**2
+    )
 
-# Calculate Euclidean distance to the assigned cluster centroid for both training and test data
-    # For X
-    distances_X = euclidean_distances(X_coords, kmeans.cluster_centers_)
-    X[f'distance_to_cluster_{k}'] = distances_X[np.arange(len(X_coords)), X[f'geo_cluster_{k}']]
+# 2. Latitude and Longitude Binning
+# Define number of bins
+num_lat_bins = 10
+num_lon_bins = 10
 
-# For test_df
-    distances_test = euclidean_distances(test_df[['latitude', 'longitude']], kmeans.cluster_centers_)
-    test_df[f'distance_to_cluster_{k}'] = distances_test[np.arange(len(test_df)), test_df[f'geo_cluster_{k}']]
+# Create bins for latitude and longitude
+combined_df['lat_bin'] = pd.cut(combined_df['latitude'], bins=num_lat_bins, labels=False, include_lowest=True)
+combined_df['lon_bin'] = pd.cut(combined_df['longitude'], bins=num_lon_bins, labels=False, include_lowest=True)
 
-# (2) Grid-based binning by rounding latitude and longitude
-X['lat_bin'] = X['latitude'].round(1)
-X['lon_bin'] = X['longitude'].round(1)
-test_df['lat_bin'] = test_df['latitude'].round(1)
-test_df['lon_bin'] = test_df['longitude'].round(1)
+# Convert new categorical features to 'category' dtype for LightGBM
+categorical_features = ['geo_cluster_k', 'lat_bin', 'lon_bin']
+for col in categorical_features:
+    combined_df[col] = combined_df[col].astype('category')
 
-# Convert new categorical features to 'category' dtype
-categorical_features = []  # List to store names of categorical features for LightGBM
-for k in [5, 10, 20]:
-    X[f'geo_cluster_{k}'] = X[f'geo_cluster_{k}'].astype('category')
-    test_df[f'geo_cluster_{k}'] = test_df[f'geo_cluster_{k}'].astype('category')
-    categorical_features.append(f'geo_cluster_{k}')
-
-X['lat_bin'] = X['lat_bin'].astype('category')
-X['lon_bin'] = X['lon_bin'].astype('category')
-test_df['lat_bin'] = test_df['lat_bin'].astype('category')
-test_df['lon_bin'] = test_df['lon_bin'].astype('category')
-categorical_features.extend(['lat_bin', 'lon_bin'])
+# Split back into X and test_df
+X = combined_df.iloc[:X_shape].copy()
+test_df = combined_df.iloc[X_shape:].copy()
 
 # Split the training data into training and validation sets
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- Model Training and Prediction ---
+# --- Model Training and Prediction with Hyperparameter Tuning ---
 
-# Define parameter grids for RandomizedSearchCV
-lgbm_param_grid = {
-    'n_estimators': [500, 1000, 1500, 2000, 3000],
-    'learning_rate': [0.01, 0.03, 0.05, 0.1],
-    'num_leaves': [15, 31, 50, 100],
-    'max_depth': [3, 5, 10, 15, 20],
-    'min_child_samples': [5, 10, 20, 50],
-    'subsample': [0.6, 0.8, 1.0],
-    'colsample_bytree': [0.6, 0.8, 1.0],
-    'reg_alpha': [0, 0.1, 0.5, 1.0],
-    'reg_lambda': [0, 0.1, 0.5, 1.0]
+# Define parameter distributions for RandomizedSearchCV
+
+# LightGBM Parameter Grid
+lgbm_param_dist = {
+    'n_estimators': randint(500, 3001),  # Max 3000
+    'learning_rate': uniform(0.01, 0.1 - 0.01),  # From 0.01 to 0.1
+    'num_leaves': randint(15, 101),  # From 15 to 100
+    'max_depth': randint(3, 21),  # From 3 to 20
+    'min_child_samples': randint(5, 51),  # From 5 to 50
+    'subsample': uniform(0.6, 0.4),  # From 0.6 to 1.0
+    'colsample_bytree': uniform(0.6, 0.4),  # From 0.6 to 1.0
+    'reg_alpha': uniform(0, 1.0),  # From 0 to 1.0
+    'reg_lambda': uniform(0, 1.0)  # From 0 to 1.0
 }
 
-xgb_param_grid = {
-    'n_estimators': [500, 1000, 1500, 2000, 3000],
-    'learning_rate': [0.01, 0.03, 0.05, 0.1],
-    'max_depth': [3, 5, 7, 10],
-    'min_child_weight': [1, 3, 5, 10],
-    'subsample': [0.6, 0.8, 1.0],
-    'colsample_bytree': [0.6, 0.8, 1.0],
-    'gamma': [0, 0.1, 0.3, 0.5],
-    'reg_alpha': [0, 0.1, 0.5, 1.0],
-    'reg_lambda': [0, 0.1, 0.5, 1.0]
+# XGBoost Parameter Grid
+xgb_param_dist = {
+    'n_estimators': randint(500, 3001),  # Max 3000
+    'learning_rate': uniform(0.01, 0.1 - 0.01),  # From 0.01 to 0.1
+    'max_depth': randint(3, 11),  # From 3 to 10
+    'min_child_weight': randint(1, 11),  # From 1 to 10
+    'subsample': uniform(0.6, 0.4),  # From 0.6 to 1.0
+    'colsample_bytree': uniform(0.6, 0.4),  # From 0.6 to 1.0
+    'gamma': uniform(0, 0.5),  # From 0 to 0.5
+    'reg_alpha': uniform(0, 1.0),  # From 0 to 1.0
+    'reg_lambda': uniform(0, 1.0)  # From 0 to 1.0
 }
 
 # 1. LightGBM Model Tuning
-lgbm = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
-lgbm_random_search = RandomizedSearchCV(
-    estimator=lgbm,
-    param_distributions=lgbm_param_grid,
+lgbm_model_base = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, verbose=-1, n_jobs=-1)
+lgbm_search = RandomizedSearchCV(
+    estimator=lgbm_model_base,
+    param_distributions=lgbm_param_dist,
     n_iter=40,
-    cv=3,
     scoring='neg_root_mean_squared_error',
+    cv=3,
     random_state=42,
     verbose=1,
-    n_jobs=-1  # Use all available cores
+    n_jobs=-1
 )
-# Fit RandomizedSearchCV on training data, explicitly passing categorical features
-lgbm_random_search.fit(X_train, y_train, categorical_feature=categorical_features)
-lgbm_model = lgbm_random_search.best_estimator_
-print(f"LightGBM Best Parameters: {lgbm_random_search.best_params_}")
-print(f"LightGBM Best RMSE (CV): {-lgbm_random_search.best_score_}")
+# Fit RandomizedSearchCV on X_train, y_train, explicitly passing categorical features
+lgbm_search.fit(X_train, y_train, categorical_feature=[col for col in categorical_features if col in X_train.columns])
+lgbm_best_model = lgbm_search.best_estimator_
 
 # Make predictions on the validation set with LightGBM
-y_pred_lgbm = lgbm_model.predict(X_val)
+y_pred_lgbm = lgbm_best_model.predict(X_val)
 
 # 2. XGBoost Model Tuning
-xgb_base = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42, verbosity=0, enable_categorical=True, n_jobs=-1)
-xgb_random_search = RandomizedSearchCV(
-    estimator=xgb_base,
-    param_distributions=xgb_param_grid,
+xgb_model_base = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42, verbosity=0, enable_categorical=True, n_jobs=-1)
+xgb_search = RandomizedSearchCV(
+    estimator=xgb_model_base,
+    param_distributions=xgb_param_dist,
     n_iter=40,
-    cv=3,
     scoring='neg_root_mean_squared_error',
+    cv=3,
     random_state=42,
     verbose=1,
-    n_jobs=-1  # Use all available cores
+    n_jobs=-1
 )
-# Train the XGBoost model
-xgb_random_search.fit(X_train, y_train)
-xgb_model = xgb_random_search.best_estimator_
-print(f"XGBoost Best Parameters: {xgb_random_search.best_params_}")
-print(f"XGBoost Best RMSE (CV): {-xgb_random_search.best_score_}")
+# Fit RandomizedSearchCV on X_train, y_train
+xgb_search.fit(X_train, y_train)
+xgb_best_model = xgb_search.best_estimator_
 
 # Make predictions on the validation set with XGBoost
-y_pred_xgb = xgb_model.predict(X_val)
+y_pred_xgb = xgb_best_model.predict(X_val)
 
 # --- Ensembling ---
 # Simple average ensemble of the two models' predictions
@@ -183,10 +163,10 @@ print(f"Final Validation Performance: {rmse_val}")
 
 # Optional: Prepare for submission
 # Make predictions on the test set using both models
-y_pred_lgbm_test = lgbm_model.predict(test_df)
-y_pred_xgb_test = xgb_model.predict(test_df)
-y_pred_ensemble_test = (y_pred_lgbm_test + y_pred_xgb_test) / 2
+# y_pred_lgbm_test = lgbm_best_model.predict(test_df)
+# y_pred_xgb_test = xgb_best_model.predict(test_df)
+# y_pred_ensemble_test = (y_pred_lgbm_test + y_pred_xgb_test) / 2
 
 # Create submission file (example structure)
-submission_df = pd.DataFrame({'median_house_value': y_pred_ensemble_test})
-submission_df.to_csv('submission.csv', index=False)
+# submission_df = pd.DataFrame({'median_house_value': y_pred_ensemble_test})
+# submission_df.to_csv('submission.csv', index=False)

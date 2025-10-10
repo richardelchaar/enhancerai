@@ -133,11 +133,23 @@ class MetaOrchestrator:
             with open(self.run_history_path, "r") as f:
                 history = json.load(f)
             
-            # Get the best solution from the most recent run
-            last_run = history[-1]
-            champion_relative_path = last_run["best_solution_path"]
+            # CRITICAL FIX: Get the best solution from ALL previous runs, not just the most recent
+            # Find the run with the globally best score across all history
+            lower_is_better = config.CONFIG.lower
+            valid_runs = [r for r in history if r.get('best_score') is not None]
+            
+            if not valid_runs:
+                raise ValueError("No valid runs found in history")
+            
+            if lower_is_better:
+                best_run = min(valid_runs, key=lambda r: r['best_score'])
+            else:
+                best_run = max(valid_runs, key=lambda r: r['best_score'])
+            
+            champion_relative_path = best_run["best_solution_path"]
             champion_full_path = os.path.join(self.workspace_root, champion_relative_path)
             
+            print(f"[Run {run_id}] Champion selected from Run {best_run['run_id']} (score: {best_run['best_score']})")
             print(f"[Run {run_id}] Loading champion from: {champion_full_path}")
             
             # Read the champion code
@@ -193,7 +205,7 @@ class MetaOrchestrator:
             for task_id in range(1, num_solutions_from_agents + 1):
                 initial_state[f"train_code_0_{task_id}"] = champion_code
                 initial_state[f"train_code_exec_result_0_{task_id}"] = {
-                    "score": last_run["best_score"],
+                    "score": best_run["best_score"],
                     "returncode": 0
                 }
             
@@ -210,7 +222,7 @@ class MetaOrchestrator:
             else:
                 print(f"[Run {run_id}] WARNING: No next_improvement found in enhancer output")
             
-            print(f"[Run {run_id}] Created workspace structure and seeded {num_solutions_from_agents} task(s) with champion code (score: {last_run['best_score']})")
+            print(f"[Run {run_id}] Created workspace structure and seeded {num_solutions_from_agents} task(s) with champion code (score: {best_run['best_score']})")
             print(f"[Run {run_id}] LINEAR REFINEMENT MODE: Only Task 1 will execute (Task 2+ skipped)")
             print(f"[Run {run_id}] Note: All {num_solutions_from_agents} task directories created for agent compatibility")
 
