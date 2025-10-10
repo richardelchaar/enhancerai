@@ -198,6 +198,10 @@ def load_plan_step_for_execution(
     plan = callback_context.state.get(f"refinement_plan_{task_id}", [])
     step_idx = callback_context.state.get(f"plan_execution_step_{task_id}", 0)
 
+    print(f"\n[LOOP DEBUG] Task {task_id}: load_plan_step_for_execution called")
+    print(f"[LOOP DEBUG]   step_idx={step_idx}, len(plan)={len(plan)}")
+    print(f"[LOOP DEBUG]   Agent name: {callback_context.agent_name}")
+
     # Check if previous step failed - log it but continue trying remaining steps
     # This ensures all strategic goals get attempted even if some fail
     if step_idx > 0:
@@ -236,6 +240,7 @@ def load_plan_step_for_execution(
 
     # Help debug_util build the right suffix for eval
     callback_context.state[f"inner_iter_{task_id}"] = step_idx
+    print(f"[Plan Execution] Task {task_id} executing step index {step_idx}: {callback_context.state[f'current_plan_step_description_{task_id}']}")
     return None
 
 
@@ -246,6 +251,9 @@ def update_plan_execution_step(
     task_id = callback_context.agent_name.split("_")[-1]
     step_idx = callback_context.state.get(f"plan_execution_step_{task_id}", 0)
     refine_step = callback_context.state.get(f"refine_step_{task_id}", 0)
+
+    print(f"\n[LOOP DEBUG] update_plan_execution_step called")
+    print(f"[LOOP DEBUG]   step_idx BEFORE increment: {step_idx}")
 
     # Get the result of the step that just ran by reading from the state
     result = callback_context.state.get(
@@ -440,6 +448,60 @@ for k in range(config.CONFIG.num_solutions):
     )
     refinement_parallel_sub_agents.append(ablation_and_refine_loop_agent)
 
+# --- NEW: Simplified Single-Step Refinement for Run 1+ ---
+
+def get_single_improvement_instruction(context: callback_context_module.ReadonlyContext) -> str:
+    """Gets instruction for implementing the enhancer's single improvement suggestion."""
+    task_id = context.agent_name.split("_")[-1]
+
+    # Get the improvement suggestion from enhancer
+    improvement = context.state.get("improvement_to_implement", {})
+    if not improvement:
+        return "ERROR: No improvement suggestion found from enhancer"
+
+    focus = improvement.get("focus", "")
+    description = improvement.get("description", "")
+    rationale = improvement.get("rationale", "")
+
+    # Get current champion code
+    current_code = context.state.get(f"train_code_0_{task_id}", "")
+    current_score = context.state.get(f"train_code_exec_result_0_{task_id}", {}).get("score", "N/A")
+
+    return prompt.IMPLEMENT_SINGLE_IMPROVEMENT_INSTR.format(
+        current_code=current_code,
+        current_score=current_score,
+        improvement_focus=focus,
+        improvement_description=description,
+        improvement_rationale=rationale,
+    )
+
+
+# Build simplified single-step agent for Run 1+
+single_improvement_agent_task_1 = debug_util.get_run_and_debug_agent(
+    prefix="single_improvement",
+    suffix="1",
+    agent_description="Implements the enhancer's single improvement suggestion",
+    instruction_func=get_single_improvement_instruction,
+    before_model_callback=None,
+)
+
+# Wrap the simple agent to choose between Run 0 (complex) and Run 1+ (simple)
+def choose_refinement_mode(
+    callback_context: callback_context_module.CallbackContext
+) -> Optional[types.Content]:
+    """Routes to simple single-step mode for Run 1+, full pipeline for Run 0."""
+    is_refinement_run = callback_context.state.get("is_refinement_run", False)
+
+    if is_refinement_run:
+        print("[Refinement Mode] Using simplified single-improvement mode for Run 1+")
+        # Will use single_improvement_agent
+    else:
+        print("[Discovery Mode] Using full ablation-plan-execute pipeline for Run 0")
+        # Will use the full ablation_and_refine_loop_agent
+
+    return None
+
+
 # --- Conditional Task Execution for Refinement Mode ---
 
 def skip_if_refinement_mode_and_not_task_1(
@@ -462,13 +524,49 @@ def skip_if_refinement_mode_and_not_task_1(
         return types.Content(parts=[types.Part(text="skipped")], role="model")
     return None
 
-# Wrap each task agent (except task 1) with conditional skip for refinement runs
-wrapped_refinement_sub_agents: List[agents.BaseAgent] = []
+# Task 1 needs conditional execution: complex for Run 0, simple for Run 1+
+# Simplest approach: SequentialAgent with both, each has a skip callback
+
+def skip_if_not_refinement(callback_context: callback_context_module.CallbackContext) -> Optional[types.Content]:
+    """Skip if NOT in refinement mode."""
+    if not callback_context.state.get("is_refinement_run", False):
+        return types.Content(parts=[types.Part(text="skipped")], role="model")
+    return None
+
+def skip_if_refinement(callback_context: callback_context_module.CallbackContext) -> Optional[types.Content]:
+    """Skip if in refinement mode."""
+    if callback_context.state.get("is_refinement_run", False):
+        return types.Content(parts=[types.Part(text="skipped")], role="model")
+    return None
+
+# Wrap Task 1 complex agent to skip in refinement mode
+task_1_complex = agents.SequentialAgent(
+    name="task_1_complex",
+    sub_agents=[refinement_parallel_sub_agents[0]],
+    before_agent_callback=skip_if_refinement,
+)
+
+# Wrap Task 1 simple agent to skip in discovery mode
+task_1_simple = agents.SequentialAgent(
+    name="task_1_simple",
+    sub_agents=[single_improvement_agent_task_1],
+    before_agent_callback=skip_if_not_refinement,
+)
+
+# Task 1 router runs both sequentially (one skips, one runs)
+task_1_router = agents.SequentialAgent(
+    name="task_1_router",
+    sub_agents=[task_1_complex, task_1_simple],
+)
+
+# Build wrapped agent list
+wrapped_refinement_sub_agents: List[agents.BaseAgent] = [task_1_router]
+
+# Add Task 2+ with skip wrappers
 for i, task_agent in enumerate(refinement_parallel_sub_agents):
     task_id = str(i + 1)
     if task_id == "1":
-        # Task 1: always runs
-        wrapped_refinement_sub_agents.append(task_agent)
+        continue  # Already added
     else:
         # Task 2+: wrapped with conditional skip for refinement runs
         wrapper = agents.SequentialAgent(
@@ -480,11 +578,11 @@ for i, task_agent in enumerate(refinement_parallel_sub_agents):
         wrapped_refinement_sub_agents.append(wrapper)
 
 # The final top-level refinement agent
-# Changed from ParallelAgent to SequentialAgent for deterministic, one-at-a-time execution
-# In Run 0: executes all tasks sequentially (Task 1, then Task 2)
-# In Run 1+: only Task 1 executes (Task 2+ are skipped via wrapper)
-refinement_agent = agents.SequentialAgent(
+# Uses ParallelAgent to run all tasks concurrently in Run 0 (original behavior)
+# In Run 0: executes all tasks in parallel (Task 1 and Task 2 simultaneously)
+# In Run 1+: only Task 1 executes (Task 2+ are skipped via wrapper before they start)
+refinement_agent = agents.ParallelAgent(
     name="refinement_agent",
-    description="Refine solutions sequentially (all tasks for Run 0, only Task 1 for Run 1+).",
+    description="Refine solutions in parallel (all tasks for Run 0, only Task 1 for Run 1+).",
     sub_agents=wrapped_refinement_sub_agents,
 )

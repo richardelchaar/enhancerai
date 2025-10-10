@@ -19,42 +19,41 @@ import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 
-# Load the training data
-train_df = pd.read_csv("./input/train.csv")
+# Load the datasets
+try:
+    train_df = pd.read_csv("./input/train.csv")
+    test_df = pd.read_csv("./input/test.csv")
+except FileNotFoundError:
+    # Fallback for Kaggle environment where files might be in ../input/
+    train_df = pd.read_csv("../input/train.csv")
+    test_df = pd.read_csv("../input/test.csv")
 
-# Identify features and target
-TARGET = 'median_house_value'
-features = [col for col in train_df.columns if col != TARGET]
+# Separate target variable from features
+X = train_df.drop("median_house_value", axis=1)
+y = train_df["median_house_value"]
 
-# Separate features (X) and target (y)
-X = train_df[features]
-y = train_df[TARGET]
+# Identify categorical features (none explicitly mentioned, assuming all are numerical for now)
+# For this dataset, all features are numerical.
 
-# Handle missing values: Impute 'total_bedrooms' with the median
-# Check if 'total_bedrooms' is a feature and has missing values
-if 'total_bedrooms' in X.columns and X['total_bedrooms'].isnull().any():
-    median_total_bedrooms = X['total_bedrooms'].median()
-    X['total_bedrooms'] = X['total_bedrooms'].fillna(median_total_bedrooms)
+# Handle missing values
+# The 'total_bedrooms' column often has missing values in this dataset.
+# Impute missing values with the median of the column.
+for col in X.columns:
+    if X[col].isnull().any():
+        median_val = X[col].median()
+        X[col].fillna(median_val, inplace=True)
+        # Apply the same imputation to the test set using the training set's median
+        if col in test_df.columns:
+            test_df[col].fillna(median_val, inplace=True)
 
-# Split the data into training and validation sets
-# Using a fixed random_state for reproducibility
+# Split the training data into training and validation sets
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Initialize LightGBM Regressor
-# Parameters are chosen to align with the example and task description (regression, RMSE metric)
-# verbose=-1 suppresses all verbose output during training
-lgbm_params = {
-    'objective': 'regression_l2',
-    'metric': 'rmse',
-    'n_estimators': 1000,
-    'learning_rate': 0.05,
-    'num_leaves': 31,
-    'random_state': 42,
-    'n_jobs': -1,  # Use all available cores
-    'verbose': -1,  # Suppress verbose output
-    'boosting_type': 'gbdt',
-}
-model = lgb.LGBMRegressor(**lgbm_params)
+# Initialize LightGBM Regressor model
+# 'objective': 'regression' is the default for regression tasks.
+# 'metric': 'rmse' is specified in the problem description.
+# 'verbose': -1 suppresses verbose output.
+model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, verbose=-1)
 
 # Train the model
 model.fit(X_train, y_train)
@@ -62,29 +61,16 @@ model.fit(X_train, y_train)
 # Make predictions on the validation set
 y_pred_val = model.predict(X_val)
 
-# Evaluate the model using Root Mean Squared Error (RMSE)
+# Calculate RMSE on the validation set
 rmse_val = np.sqrt(mean_squared_error(y_val, y_pred_val))
 
 # Print the final validation performance
-print(f'Final Validation Performance: {rmse_val}')
+print(f"Final Validation Performance: {rmse_val}")
 
-# Load the test data for submission
-test_df = pd.read_csv("./input/test.csv")
+# Prepare for submission (optional, but good practice)
+# Make predictions on the test set
+# y_pred_test = model.predict(test_df)
 
-# Ensure test data has the same preprocessing as training data
-if 'total_bedrooms' in test_df.columns and test_df['total_bedrooms'].isnull().any():
-    # Use the median from the training data for consistency
-    test_df['total_bedrooms'] = test_df['total_bedrooms'].fillna(median_total_bedrooms)
-
-# Align columns - this step is crucial if test_df might have different columns or order
-# For this specific dataset, columns are expected to be consistent, but it's good practice.
-X_test_processed = test_df[features]
-
-# Predict on the test data
-test_predictions = model.predict(X_test_processed)
-
-# Create a submission DataFrame (optional, but good practice for Kaggle)
-submission_df = pd.DataFrame({'median_house_value': test_predictions})
-
-# Save the submission file (optional, but good practice for Kaggle)
+# Create submission file (example structure)
+# submission_df = pd.DataFrame({'median_house_value': y_pred_test})
 # submission_df.to_csv('submission.csv', index=False)

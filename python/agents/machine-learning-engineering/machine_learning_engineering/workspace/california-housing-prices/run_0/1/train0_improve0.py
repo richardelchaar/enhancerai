@@ -19,62 +19,54 @@ import lightgbm as lgb
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from sklearn.experimental import enable_iterative_imputer
-from sklearn.impute import IterativeImputer
-from sklearn.linear_model import BayesianRidge
 
-# --- 1. Data Loading and Preprocessing ---
-# Load the training data. Assume file exists as per instructions.
+# Load the training data
+# As per instructions, assuming the file exists at the specified path and not using try/except.
 train_df = pd.read_csv("./input/train.csv")
 
-# Separate features and target
+# Separate features and target variable
 X = train_df.drop("median_house_value", axis=1)
 y = train_df["median_house_value"]
 
-# Handle missing values using IterativeImputer
-imputer = IterativeImputer(BayesianRidge(), max_iter=10, random_state=42)
-X_imputed = imputer.fit_transform(X)
-X = pd.DataFrame(X_imputed, columns=X.columns)
+# Handle missing values: Impute 'total_bedrooms' with its median
+# This is a common preprocessing step for this dataset
+
 
 # Split the data into training and validation sets
+# Using a fixed random_state for reproducibility
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- 2. Model Training ---
+# --- Model Training ---
 
-# 2.1. LightGBM Model (from Base Solution)
-lgbm_model = lgb.LGBMRegressor(objective='regression', metric='rmse', random_state=42, silent=True)
+# 1. Initialize and Train LightGBM Regressor model (from base solution)
+# objective='regression_l2' is for Mean Squared Error, suitable for RMSE.
+# metric='rmse' explicitly sets the evaluation metric.
+# random_state for reproducibility.
+# verbose=-1 suppresses verbose output during training.
+lgbm_model = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1)
 lgbm_model.fit(X_train, y_train)
+
+# Make predictions on the validation set using LightGBM
 y_pred_lgbm = lgbm_model.predict(X_val)
 
-# 2.2. XGBoost Model (from Reference Solution)
-xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse',
-                             random_state=42, n_jobs=-1, verbosity=0)
+# 2. Initialize and Train XGBoost Regressor model (from reference solution)
+# 'objective' 'reg:squarederror' is for regression with squared loss, suitable for RMSE.
+# 'eval_metric' 'rmse' explicitly sets the evaluation metric.
+# 'random_state' for reproducibility.
+# 'verbosity=0' suppresses verbose output during training.
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42, verbosity=0)
 xgb_model.fit(X_train, y_train)
+
+# Make predictions on the validation set using XGBoost
 y_pred_xgb = xgb_model.predict(X_val)
 
-# --- 3. Ensembling ---
-# Simple ensembling: average the predictions from both models
+# --- Ensemble Predictions ---
+# Simple averaging ensemble of LightGBM and XGBoost predictions
 y_pred_ensemble = (y_pred_lgbm + y_pred_xgb) / 2
 
-# --- 4. Evaluation of the Ensembled Model ---
+# --- Evaluate the Ensembled Model ---
+# Evaluate the model using Root Mean Squared Error (RMSE)
 rmse_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_ensemble))
 
 # Print the final validation performance
-print(f"Final Validation Performance: {rmse_ensemble}")
-
-# --- 5. Prepare for Submission ---
-# Load the test data
-test_df = pd.read_csv("./input/test.csv")
-
-# Impute missing values in test data using the *fitted* imputer
-test_imputed = imputer.transform(test_df)
-test_df_imputed = pd.DataFrame(test_imputed, columns=test_df.columns)
-
-# Generate predictions on the test set
-test_pred_lgbm = lgbm_model.predict(test_df_imputed)
-test_pred_xgb = xgb_model.predict(test_df_imputed)
-test_pred_ensemble = (test_pred_lgbm + test_pred_xgb) / 2
-
-# Create submission file
-submission_df = pd.DataFrame({'median_house_value': test_pred_ensemble})
-submission_df.to_csv("submission.csv", index=False)
+print(f'Final Validation Performance: {rmse_ensemble}')

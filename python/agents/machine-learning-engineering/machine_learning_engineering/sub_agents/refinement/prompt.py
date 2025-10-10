@@ -196,6 +196,8 @@ Based on the ablation study results, create a **{num_steps_required}-step plan**
 **CRITICAL CONSTRAINT:**
 - **ONLY use traditional ML algorithms**: LightGBM, XGBoost, CatBoost, RandomForest, Ridge, Lasso, ElasticNet, GradientBoosting, etc.
 - **DO NOT use neural networks, deep learning, PyTorch, TensorFlow, Keras, or any neural architecture**
+- **ONE FOCUS PER STEP**: Each step must address exactly one improvement focus. Do **not** combine feature engineering and hyperparameter changes in the same step.
+- **TARGETED CODE BLOCKS**: Choose the smallest contiguous code block that needs to change. Do not select the entire training script unless absolutely necessary.
 
 # Required Output Format
 You must respond with **exactly {num_steps_required} steps** in a single, valid JSON array.
@@ -274,6 +276,8 @@ You **MUST** create a plan with **exactly {num_steps_required} steps** that impl
 1. **Every strategic goal MUST be addressed** - if there are 3 goals and 3 steps, each step implements one goal
 2. **Use ablation insights** to determine the BEST location and approach for implementing each goal
 3. **Be specific** - each step must clearly state which strategic goal it implements
+4. **Do not combine goals** - each step may satisfy only one strategic focus. Feature engineering steps must not introduce hyperparameter tuning and vice versa.
+5. **Provide a precise `code_block_to_refine`** - include only the minimal lines that actually need edits, not the whole script.
 
 # Valid Refinement Focus Areas (Strategic Run)
 - **Feature Engineering**: Create/transform features, interaction terms, polynomial features, domain-specific features
@@ -343,6 +347,8 @@ You are an expert Python programmer. Your task is to integrate a new feature eng
 3.  **Apply to 'test_df'**: Find the line where `test_df` is loaded. Immediately after it, apply the *same* feature engineering function to `test_df` to ensure consistency.
 4.  **Update References**: Go through the rest of the script. Change all subsequent uses of `X` (e.g., in `train_test_split`, model training) to use the new `X_processed` DataFrame.
 5.  **Return the ENTIRE modified script.**
+6.  **Keep the training loop unchanged**: Do not introduce hyperparameter tuning, additional models, or any other modelling changes in this step. Preserve the existing training and evaluation logic except for the minimal updates required to use the engineered features.
+7.  **No new modelling imports**: Do not add imports such as `RandomizedSearchCV`, `GridSearchCV`, or other tuning utilities while implementing feature engineering.
 
 # CRITICAL REQUIREMENTS
 - You **MUST** apply the function to **BOTH** the training data (`X`) and the test data (`test_df`). Failure to do so will cause a `KeyError`.
@@ -351,6 +357,45 @@ You are an expert Python programmer. Your task is to integrate a new feature eng
 
 # Required Output Format
 You must provide your response as a single Python code block containing the entire modified script.
+"""
+
+IMPLEMENT_SINGLE_IMPROVEMENT_INSTR = """
+# Your Task
+You are implementing a single, focused improvement to ML code based on strategic guidance.
+
+# Current Champion Code
+```python
+{current_code}
+```
+
+Current validation score: {current_score}
+
+# Improvement to Implement
+**Focus Area:** {improvement_focus}
+**Description:** {improvement_description}
+**Rationale:** {improvement_rationale}
+
+# Instructions
+1. **Implement ONLY this specific improvement** - do not add other changes
+2. **Preserve all existing functionality** - keep the code structure intact
+3. **Maintain compatibility** - ensure the code still runs end-to-end
+4. **Return the complete modified code** - include all imports, functions, and logic
+
+# CRITICAL REQUIREMENTS:
+1.  **Correct Indentation - EXTREMELY IMPORTANT**:
+    - Use EXACTLY 4 spaces per indent level. NO TABS.
+    - **PRESERVE THE EXACT INDENTATION LEVEL** of the original code block
+    - **EVERY LINE must have consistent indentation** - Python will fail with IndentationError otherwise
+2.  **No `return` Statements**: Do not use `return` unless it's INSIDE a function definition body.
+3.  **No New Functions**: Inline the logic; do not define new helper functions unless absolutely necessary.
+4.  **No `try/except` Blocks**: Handle errors by checking conditions beforehand (e.g., `if x is not None:`).
+5.  **Match Variable Names**: All variable names must EXACTLY match those in the original code.
+6.  **Valid Python Syntax**: The final code block MUST be syntactically valid Python that can execute.
+7.  **Copy-Paste Safety**: Your output should be directly copy-pastable and runnable without any manual fixes.
+8.  **XGBoost Early Stopping**: DO NOT use early stopping for XGBoost models (version compatibility issues). Only use early stopping for LightGBM.
+
+# Required Output Format
+You must provide your response as a single Python code block wrapped in ```.
 """
 
 IMPLEMENT_PLAN_STEP_INSTR = """
@@ -390,6 +435,7 @@ Your **only job** is to apply the change described in the "Plan Step" to the "Co
 8.  **Maintain Scope**: The code must work in the same scope and context as the original block.
 9.  **Copy-Paste Safety**: Your output should be directly copy-pastable and runnable without any manual fixes.
 10. **XGBoost Early Stopping**: DO NOT use early stopping for XGBoost models (version compatibility issues). Only use early stopping for LightGBM.
+11. **No Unrequested Changes**: Do not introduce hyperparameter search utilities, additional models, or other algorithmic changes unless the plan step explicitly requires them.
 
 # Common Indentation Mistakes to AVOID:
 - ❌ Mixing spaces and tabs

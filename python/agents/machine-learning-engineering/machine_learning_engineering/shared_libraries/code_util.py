@@ -178,6 +178,10 @@ def get_updated_suffix(
         step = callback_context.state.get(f"refine_step_{task_id}", 0)
         inner_iter = callback_context.state.get(f"inner_iter_{task_id}", 0)
         suffix = f"{inner_iter}_{step}_{task_id}"
+    elif agent_name.startswith("single_improvement"):
+        # Single improvement agent for Run 1+ (simplified refinement)
+        task_id = agent_name.split("_")[-1]
+        suffix = f"1_{task_id}"  # step=1, task_id
     elif agent_name.startswith("ensemble_plan_implement"):
         ensemble_iter = callback_context.state.get("ensemble_iter", 0)
         suffix = f"{ensemble_iter}"
@@ -203,6 +207,9 @@ def get_code_state_key(
         key = f"ablation_code_{suffix}"
     elif agent_name.startswith("plan_implement"):
         key = f"train_code_improve_{suffix}"
+    elif agent_name.startswith("single_improvement"):
+        # Single improvement agent stores code as train_code_improve_{suffix}
+        key = f"train_code_improve_{suffix}"
     elif agent_name.startswith("ensemble_plan_implement"):
         key = f"ensemble_code_{suffix}"
     elif agent_name.startswith("submission"):
@@ -226,6 +233,9 @@ def get_code_execution_result_state_key(
     elif agent_name.startswith("ablation"):
         key = f"ablation_code_exec_result_{suffix}"
     elif agent_name.startswith("plan_implement"):
+        key = f"train_code_improve_exec_result_{suffix}"
+    elif agent_name.startswith("single_improvement"):
+        # Single improvement agent stores exec result as train_code_improve_exec_result_{suffix}
         key = f"train_code_improve_exec_result_{suffix}"
     elif agent_name.startswith("ensemble_plan_implement"):
         key = f"ensemble_code_exec_result_{suffix}"
@@ -290,6 +300,10 @@ def evaluate_code(
         step = callback_context.state.get(f"refine_step_{task_id}", 0)
         inner_iter = callback_context.state.get(f"inner_iter_{task_id}", 0)
         py_filepath = f"train{step}_improve{inner_iter}.py"
+    elif agent_name.startswith("single_improvement"):
+        # Single improvement agent for Run 1+ (simplified refinement)
+        task_id = agent_name.split("_")[-1]
+        py_filepath = f"train1_improve1.py"  # step=1, improvement=1
     elif agent_name.startswith("ensemble_plan_implement"):
         task_id = "ensemble"
         py_filepath = f"ensemble{suffix}.py"
@@ -307,6 +321,34 @@ def evaluate_code(
     validation_errors: list[dict[str, str]] = []
     if blocking_error:
         validation_errors.append(blocking_error)
+
+    policy_error = None
+    if agent_name.startswith("plan_implement"):
+        task_id_for_policy = agent_name.split("_")[-1]
+        plan_desc_key = f"current_plan_step_description_{task_id_for_policy}"
+        plan_desc = callback_context.state.get(plan_desc_key, "")
+        if plan_desc and "feature engineering" in plan_desc.lower():
+            lowered_code = raw_code.lower()
+            banned_tokens = [
+                "randomizedsearchcv",
+                "gridsearchcv",
+                "bayessearchcv",
+                "optuna",
+                "hyperopt",
+                "skopt",
+            ]
+            if any(token in lowered_code for token in banned_tokens):
+                policy_error = {
+                    "code": "feature_step_policy_violation",
+                    "message": (
+                        "Feature engineering step must not introduce hyperparameter tuning "
+                        "or automated search utilities."
+                    ),
+                }
+    if policy_error:
+        should_run = False
+        blocking_error = policy_error
+        validation_errors.append(policy_error)
 
     if should_run:
         workspace_dir = callback_context.state.get("workspace_dir", "")

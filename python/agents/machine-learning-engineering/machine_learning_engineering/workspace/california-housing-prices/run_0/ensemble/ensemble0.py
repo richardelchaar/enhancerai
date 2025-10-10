@@ -15,55 +15,49 @@ warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
 import pandas as pd
 import numpy as np
+import lightgbm as lgb
+import xgboost as xgb
 from sklearn.model_selection import train_test_split
-from sklearn.impute import SimpleImputer
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 
 # Load the training data
 train_df = pd.read_csv("./input/train.csv")
 
-# Separate features and target
+# Separate features and target variable
 X = train_df.drop("median_house_value", axis=1)
 y = train_df["median_house_value"]
 
-# Handle missing values using SimpleImputer (median strategy) for all numerical columns
-# It's crucial to fit the imputer on the training data only and then transform both train and test.
-imputer = SimpleImputer(strategy='median')
-X_imputed = imputer.fit_transform(X)
-X = pd.DataFrame(X_imputed, columns=X.columns)
+# Handle missing values: Impute all numerical missing columns with their median from the training data
+# This approach is adopted from Solution 2 for its robustness.
+for col in X.columns:
+    if X[col].isnull().any():
+        median_val = X[col].median()
+        X[col].fillna(median_val, inplace=True)
 
-# Split the data into training and validation sets for consistent evaluation
+# Split the data into training and validation sets
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Initialize and train a RandomForestRegressor model
-# Suppress verbose output by setting verbose=0
-model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1, verbose=0)
-model.fit(X_train, y_train)
+# 1. Initialize and Train LightGBM Regressor model
+# Using objective='regression_l2' from Solution 1, which is suitable for RMSE.
+lgbm_model = lgb.LGBMRegressor(objective='regression_l2', metric='rmse', random_state=42, verbose=-1)
+lgbm_model.fit(X_train, y_train)
 
-# Make predictions on the validation set
-y_pred_val = model.predict(X_val)
+# Make predictions on the validation set using LightGBM
+y_pred_lgbm = lgbm_model.predict(X_val)
 
-# Calculate Root Mean Squared Error (RMSE)
-# The 'squared' parameter is not supported in older scikit-learn versions.
-# Calculate MSE first, then take the square root to get RMSE.
-mse = mean_squared_error(y_val, y_pred_val)
-final_validation_score = np.sqrt(mse)
+# 2. Initialize and Train XGBoost Regressor model
+# Using n_estimators=1000 from Solution 2 for potentially improved performance.
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', eval_metric='rmse', random_state=42, verbosity=0, n_estimators=1000)
+xgb_model.fit(X_train, y_train)
+
+# Make predictions on the validation set using XGBoost
+y_pred_xgb = xgb_model.predict(X_val)
+
+# Simple averaging ensemble of LightGBM and XGBoost predictions
+y_pred_ensemble = (y_pred_lgbm + y_pred_xgb) / 2
+
+# Evaluate the ensembled model using Root Mean Squared Error (RMSE)
+rmse_ensemble = np.sqrt(mean_squared_error(y_val, y_pred_ensemble))
 
 # Print the final validation performance
-print(f"Final Validation Performance: {final_validation_score}")
-
-# Load the test data
-test_df = pd.read_csv("./input/test.csv")
-
-# Apply the *same* imputer fitted on the training data to the test data.
-# This prevents data leakage from the test set.
-test_imputed = imputer.transform(test_df)
-test_df_processed = pd.DataFrame(test_imputed, columns=test_df.columns)
-
-# Make predictions on the processed test data
-test_predictions = model.predict(test_df_processed)
-
-# Create the submission file
-submission_df = pd.DataFrame({'median_house_value': test_predictions})
-submission_df.to_csv('submission.csv', index=False)
+print(f'Final Validation Performance: {rmse_ensemble}')

@@ -22,6 +22,7 @@ from google.adk.runners import InMemoryRunner
 from machine_learning_engineering.agent import mle_pipeline_agent
 from machine_learning_engineering.shared_libraries import config
 from machine_learning_engineering.sub_agents.enhancer.agent import enhancer_agent
+from google.adk.agents.loop_agent import LoopAgent
 
 
 class MetaOrchestrator:
@@ -30,9 +31,9 @@ class MetaOrchestrator:
     def __init__(self, task_name: str, num_runs: int, initial_config_path: str = None):
         self.task_name = task_name
         self.num_runs = num_runs
-        self.workspace_root = os.path.join(
-            config.CONFIG.workspace_dir, self.task_name
-        )
+        # Convert workspace_dir to absolute path to avoid path issues
+        workspace_dir_abs = os.path.abspath(config.CONFIG.workspace_dir)
+        self.workspace_root = os.path.join(workspace_dir_abs, self.task_name)
         self.run_history_path = os.path.join(self.workspace_root, "run_history.json")
         self.run_history = []
         self.initial_config = self._load_initial_config(initial_config_path)
@@ -99,6 +100,7 @@ class MetaOrchestrator:
 
         # Ensure sub-agents that consult the global CONFIG see the overrides for this run.
         overrides_snapshot = self._apply_global_config_overrides(run_config)
+        self._synchronize_agent_runtime_config(run_config)
 
         # Build initial session state
         initial_state: Dict[str, Any] = {**run_config}
@@ -198,6 +200,16 @@ class MetaOrchestrator:
             # Set refinement-only mode flag
             initial_state["is_refinement_run"] = True
             initial_state["num_solutions"] = 1  # LINEAR REFINEMENT: Only refine 1 solution (the champion)
+            
+            # Seed the improvement to implement from enhancer output
+            enhancer_output = run_config.get("enhancer_output", {})
+            if "next_improvement" in enhancer_output:
+                initial_state["improvement_to_implement"] = enhancer_output["next_improvement"]
+                print(f"[Run {run_id}] Seeded improvement: {enhancer_output['next_improvement'].get('focus', 'N/A')}")
+                print(f"[Run {run_id}]   Description: {enhancer_output['next_improvement'].get('description', 'N/A')}")
+            else:
+                print(f"[Run {run_id}] WARNING: No next_improvement found in enhancer output")
+            
             print(f"[Run {run_id}] Created workspace structure and seeded {num_solutions_from_agents} task(s) with champion code (score: {last_run['best_score']})")
             print(f"[Run {run_id}] LINEAR REFINEMENT MODE: Only Task 1 will execute (Task 2+ skipped)")
             print(f"[Run {run_id}] Note: All {num_solutions_from_agents} task directories created for agent compatibility")
@@ -249,16 +261,26 @@ class MetaOrchestrator:
         lower_is_better = final_state.get("lower", True)
         
         # Check all potential final solutions from all parallel initializations
+        is_refinement_run = final_state.get("is_refinement_run", False)
         for i in range(final_state.get("num_solutions", 1)):
             task_id = i + 1
-            # Check final refined score
-            last_step = final_state.get(f'refine_step_{task_id}', 0)
-            refined_score = final_state.get(f"train_code_exec_result_{last_step}_{task_id}", {}).get("score")
-            if refined_score is not None:
-                if best_score is None or (lower_is_better and refined_score < best_score) or (not lower_is_better and refined_score > best_score):
-                    best_score = refined_score
-                    # Track the actual file path for this refined solution
-                    best_solution_path = f"run_{run_id}/{task_id}/train{last_step}_{task_id}.py"
+
+            if is_refinement_run:
+                # Run 1+: Check for single improvement result
+                improved_score = final_state.get(f"train_code_improve_exec_result_1_{task_id}", {}).get("score")
+                if improved_score is not None:
+                    if best_score is None or (lower_is_better and improved_score < best_score) or (not lower_is_better and improved_score > best_score):
+                        best_score = improved_score
+                        best_solution_path = f"run_{run_id}/{task_id}/train1_improve1.py"
+            else:
+                # Run 0: Check final refined score from multi-step refinement
+                last_step = final_state.get(f'refine_step_{task_id}', 0)
+                refined_score = final_state.get(f"train_code_exec_result_{last_step}_{task_id}", {}).get("score")
+                if refined_score is not None:
+                    if best_score is None or (lower_is_better and refined_score < best_score) or (not lower_is_better and refined_score > best_score):
+                        best_score = refined_score
+                        # Track the actual file path for this refined solution
+                        best_solution_path = f"run_{run_id}/{task_id}/train{last_step}_{task_id}.py"
 
         # Check final ensembled score
         ensemble_iter = final_state.get("ensemble_iter", 0)
@@ -351,6 +373,37 @@ class MetaOrchestrator:
         for key in overrides_snapshot:
             setattr(config.CONFIG, key, run_config[key])
         return overrides_snapshot
+
+    def _synchronize_agent_runtime_config(self, run_config: Dict[str, Any]) -> None:
+        """Bring pre-instantiated loop agents back in sync with the active run_config."""
+
+        loop_iteration_overrides: Dict[str, str] = {
+            "plan_execution_loop_agent": "inner_loop_round",
+            "ablation_and_refine_loop_agent": "outer_loop_round",
+            "ensemble_execution_loop": "ensemble_loop_round",
+            "debug_inner_loop_agent": "max_debug_round",
+            "debug_loop_agent": "max_debug_round",
+            "and_debug_loop_agent": "max_rollback_round",
+            "loop_agent": "max_retry",
+        }
+
+        def desired_iterations(agent_name: str) -> Any:
+            for token, config_key in loop_iteration_overrides.items():
+                if token in agent_name:
+                    return run_config.get(config_key)
+            return None
+
+        def traverse(agent) -> None:
+            if isinstance(agent, LoopAgent):
+                new_iterations = desired_iterations(agent.name)
+                if new_iterations is not None:
+                    agent.max_iterations = new_iterations
+            sub_agents = getattr(agent, "sub_agents", None)
+            if sub_agents:
+                for sub_agent in sub_agents:
+                    traverse(sub_agent)
+
+        traverse(mle_pipeline_agent)
 
     async def run(self):
         """Executes the full meta-learning loop for N runs."""
